@@ -78,7 +78,7 @@ static void HistogramUpdateFunctionString(Vector inputs[], FunctionData *, idx_t
 }
 
 template <class T>
-static void HistogramCombineFunction(Vector &state, Vector &combined, idx_t count) {
+static void HistogramCombineFunction(Vector &state, Vector &combined, FunctionData *bind_data, idx_t count) {
 	VectorData sdata;
 	state.Orrify(count, sdata);
 	auto states_ptr = (HistogramAggState<T> **)sdata.data;
@@ -139,7 +139,7 @@ static void HistogramFinalize(Vector &state_vector, FunctionData *, Vector &resu
 		list_struct_data = FlatVector::GetData<list_entry_t>(*count_list);
 		list_struct_data[rid].length = ListVector::GetListSize(*count_list) - old_len;
 		list_struct_data[rid].offset = old_len;
-		old_len = list_struct_data[rid].length;
+		old_len += list_struct_data[rid].length;
 	}
 }
 
@@ -251,6 +251,9 @@ void HistogramFun::RegisterFunction(BuiltinFunctions &set) {
 	fun.AddFunction(GetHistogramFunction<int64_t>(LogicalType::TIMESTAMP_S));
 	fun.AddFunction(GetHistogramFunction<int64_t>(LogicalType::TIMESTAMP_MS));
 	fun.AddFunction(GetHistogramFunction<int64_t>(LogicalType::TIMESTAMP_NS));
+	fun.AddFunction(GetHistogramFunction<int64_t>(LogicalType::TIME));
+	fun.AddFunction(GetHistogramFunction<int64_t>(LogicalType::TIME_TZ));
+	fun.AddFunction(GetHistogramFunction<int32_t>(LogicalType::DATE));
 	set.AddFunction(fun);
 }
 

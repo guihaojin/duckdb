@@ -18,15 +18,18 @@ struct ListAggregatesBindData : public FunctionData {
 	LogicalType stype;
 	unique_ptr<Expression> aggr_expr;
 
-	unique_ptr<FunctionData> Copy() override;
+	unique_ptr<FunctionData> Copy() const override {
+		return make_unique<ListAggregatesBindData>(stype, aggr_expr->Copy());
+	}
+
+	bool Equals(const FunctionData &other_p) const override {
+		auto &other = (const ListAggregatesBindData &)other_p;
+		return stype == other.stype && aggr_expr->Equals(other.aggr_expr.get());
+	}
 };
 
 ListAggregatesBindData::ListAggregatesBindData(const LogicalType &stype_p, unique_ptr<Expression> aggr_expr_p)
     : stype(stype_p), aggr_expr(move(aggr_expr_p)) {
-}
-
-unique_ptr<FunctionData> ListAggregatesBindData::Copy() {
-	return make_unique<ListAggregatesBindData>(stype, aggr_expr->Copy());
 }
 
 ListAggregatesBindData::~ListAggregatesBindData() {
@@ -119,10 +122,7 @@ static void ListAggregateFunction(DataChunk &args, ExpressionState &state, Vecto
 			continue;
 		}
 
-		auto source_idx = child_data.sel->get_index(list_entry.offset);
-		idx_t child_idx = 0;
-
-		while (child_idx < list_entry.length) {
+		for (idx_t child_idx = 0; child_idx < list_entry.length; child_idx++) {
 
 			// states vector is full, update
 			if (states_idx == STANDARD_VECTOR_SIZE) {
@@ -135,10 +135,10 @@ static void ListAggregateFunction(DataChunk &args, ExpressionState &state, Vecto
 				states_idx = 0;
 			}
 
-			sel_vector.set_index(states_idx, source_idx + child_idx);
+			auto source_idx = child_data.sel->get_index(list_entry.offset + child_idx);
+			sel_vector.set_index(states_idx, source_idx);
 			states_update[states_idx] = state_ptr;
 			states_idx++;
-			child_idx++;
 		}
 	}
 
@@ -165,8 +165,8 @@ static unique_ptr<FunctionData> ListAggregateBind(ClientContext &context, Scalar
 		return make_unique<VariableReturnBindData>(bound_function.return_type);
 	}
 
-	D_ASSERT(LogicalTypeId::LIST == arguments[0]->return_type.id());
-	auto list_child_type = ListType::GetChildType(arguments[0]->return_type);
+	bool is_parameter = arguments[0]->return_type.id() == LogicalTypeId::UNKNOWN;
+	auto list_child_type = is_parameter ? LogicalTypeId::UNKNOWN : ListType::GetChildType(arguments[0]->return_type);
 	bound_function.return_type = list_child_type;
 
 	if (!arguments[1]->IsFoldable()) {
@@ -175,15 +175,14 @@ static unique_ptr<FunctionData> ListAggregateBind(ClientContext &context, Scalar
 
 	// get the function name
 	Value function_value = ExpressionExecutor::EvaluateScalar(*arguments[1]);
-	auto function_name = StringValue::Get(function_value);
+	auto function_name = function_value.ToString();
 
 	vector<LogicalType> types;
 	types.push_back(list_child_type);
 
 	// create the child expression and its type
 	vector<unique_ptr<Expression>> children;
-	auto expr = make_unique<BoundConstantExpression>(Value(LogicalType::SQLNULL));
-	expr->return_type = list_child_type;
+	auto expr = make_unique<BoundConstantExpression>(Value(list_child_type));
 	children.push_back(move(expr));
 
 	// look up the aggregate function in the catalog
@@ -191,6 +190,12 @@ static unique_ptr<FunctionData> ListAggregateBind(ClientContext &context, Scalar
 	auto func = (AggregateFunctionCatalogEntry *)Catalog::GetCatalog(context).GetEntry<AggregateFunctionCatalogEntry>(
 	    context, DEFAULT_SCHEMA, function_name, false, error_context);
 	D_ASSERT(func->type == CatalogType::AGGREGATE_FUNCTION_ENTRY);
+
+	if (is_parameter) {
+		bound_function.arguments[0] = LogicalTypeId::UNKNOWN;
+		bound_function.return_type = LogicalType::SQLNULL;
+		return nullptr;
+	}
 
 	// find a matching aggregate function
 	string error;
@@ -203,8 +208,8 @@ static unique_ptr<FunctionData> ListAggregateBind(ClientContext &context, Scalar
 	auto &best_function = func->functions[best_function_idx];
 	auto bound_aggr_function = AggregateFunction::BindAggregateFunction(context, best_function, move(children));
 
-	bound_function.arguments[0] =
-	    LogicalType::LIST(bound_aggr_function->function.arguments[0]); // for proper casting of the vectors
+	// for proper casting of the vectors
+	bound_function.arguments[0] = LogicalType::LIST(bound_aggr_function->function.arguments[0]);
 	bound_function.return_type = bound_aggr_function->function.return_type;
 	return make_unique<ListAggregatesBindData>(bound_function.return_type, move(bound_aggr_function));
 }

@@ -2,7 +2,7 @@
 #include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/execution/operator/aggregate/physical_hash_aggregate.hpp"
 #include "duckdb/execution/operator/aggregate/physical_perfecthash_aggregate.hpp"
-#include "duckdb/execution/operator/aggregate/physical_simple_aggregate.hpp"
+#include "duckdb/execution/operator/aggregate/physical_ungrouped_aggregate.hpp"
 #include "duckdb/execution/operator/projection/physical_projection.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -51,11 +51,11 @@ static bool CanUsePerfectHashAggregate(ClientContext &context, LogicalAggregate 
 			switch (group_type.InternalType()) {
 			case PhysicalType::INT8:
 				stats = make_unique<NumericStatistics>(group_type, Value::MinimumValue(group_type),
-				                                       Value::MaximumValue(group_type));
+				                                       Value::MaximumValue(group_type), StatisticsType::LOCAL_STATS);
 				break;
 			case PhysicalType::INT16:
 				stats = make_unique<NumericStatistics>(group_type, Value::MinimumValue(group_type),
-				                                       Value::MaximumValue(group_type));
+				                                       Value::MaximumValue(group_type), StatisticsType::LOCAL_STATS);
 				break;
 			default:
 				// type is too large and there are no stats: skip perfect hashing
@@ -138,8 +138,8 @@ unique_ptr<PhysicalOperator> PhysicalPlanGenerator::CreatePlan(LogicalAggregate 
 			}
 		}
 		if (use_simple_aggregation) {
-			groupby = make_unique_base<PhysicalOperator, PhysicalSimpleAggregate>(op.types, move(op.expressions),
-			                                                                      op.estimated_cardinality);
+			groupby = make_unique_base<PhysicalOperator, PhysicalUngroupedAggregate>(op.types, move(op.expressions),
+			                                                                         op.estimated_cardinality);
 		} else {
 			groupby = make_unique_base<PhysicalOperator, PhysicalHashAggregate>(context, op.types, move(op.expressions),
 			                                                                    op.estimated_cardinality);

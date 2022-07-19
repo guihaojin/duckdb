@@ -1,6 +1,7 @@
 #include "duckdb/execution/operator/join/physical_cross_product.hpp"
 
 #include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/execution/operator/join/physical_join.hpp"
 
 namespace duckdb {
 
@@ -16,7 +17,7 @@ PhysicalCrossProduct::PhysicalCrossProduct(vector<LogicalType> types, unique_ptr
 //===--------------------------------------------------------------------===//
 class CrossProductGlobalState : public GlobalSinkState {
 public:
-	CrossProductGlobalState() {
+	explicit CrossProductGlobalState(ClientContext &context) : rhs_materialized(BufferAllocator::Get(context)) {
 	}
 
 	ChunkCollection rhs_materialized;
@@ -24,7 +25,7 @@ public:
 };
 
 unique_ptr<GlobalSinkState> PhysicalCrossProduct::GetGlobalSinkState(ClientContext &context) const {
-	return make_unique<CrossProductGlobalState>();
+	return make_unique<CrossProductGlobalState>(context);
 }
 
 SinkResultType PhysicalCrossProduct::Sink(ExecutionContext &context, GlobalSinkState &state, LocalSinkState &lstate_p,
@@ -46,7 +47,7 @@ public:
 	idx_t right_position;
 };
 
-unique_ptr<OperatorState> PhysicalCrossProduct::GetOperatorState(ClientContext &context) const {
+unique_ptr<OperatorState> PhysicalCrossProduct::GetOperatorState(ExecutionContext &context) const {
 	return make_unique<CrossProductOperatorState>();
 }
 
@@ -86,6 +87,17 @@ OperatorResultType PhysicalCrossProduct::Execute(ExecutionContext &context, Data
 	// for the next iteration, move to the next position on the right side
 	state.right_position++;
 	return OperatorResultType::HAVE_MORE_OUTPUT;
+}
+
+//===--------------------------------------------------------------------===//
+// Pipeline Construction
+//===--------------------------------------------------------------------===//
+void PhysicalCrossProduct::BuildPipelines(Executor &executor, Pipeline &current, PipelineBuildState &state) {
+	PhysicalJoin::BuildJoinPipelines(executor, current, state, *this);
+}
+
+vector<const PhysicalOperator *> PhysicalCrossProduct::GetSources() const {
+	return children[0]->GetSources();
 }
 
 } // namespace duckdb

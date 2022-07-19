@@ -17,8 +17,10 @@
 
 namespace duckdb {
 class Event;
+class Executor;
 class PhysicalOperator;
 class Pipeline;
+class PipelineBuildState;
 
 // LCOV_EXCL_START
 class OperatorState {
@@ -50,6 +52,13 @@ class LocalSinkState {
 public:
 	virtual ~LocalSinkState() {
 	}
+
+	//! The current batch index
+	//! This is only set in case RequiresBatchIndex() is true, and the source has support for it (SupportsBatchIndex())
+	//! Otherwise this is left on INVALID_INDEX
+	//! The batch index is a globally unique, increasing index that should be used to maintain insertion order
+	//! //! in conjunction with parallelism
+	idx_t batch_index = DConstants::INVALID_INDEX;
 };
 
 class GlobalSourceState {
@@ -67,6 +76,7 @@ public:
 	virtual ~LocalSourceState() {
 	}
 };
+
 // LCOV_EXCL_STOP
 
 //! PhysicalOperator is the base class of the physical operators present in the
@@ -99,6 +109,7 @@ public:
 	}
 	virtual string ToString() const;
 	void Print() const;
+	virtual vector<PhysicalOperator *> GetChildren() const;
 
 	//! Return a vector of the types that will be returned by this operator
 	const vector<LogicalType> &GetTypes() const {
@@ -109,9 +120,17 @@ public:
 		return false;
 	}
 
+	virtual void Verify();
+
+	//! Whether or not the operator depends on the order of the input chunks
+	//! If this is set to true, we cannot do things like caching intermediate vectors
+	virtual bool IsOrderDependent() const {
+		return false;
+	}
+
 public:
 	// Operator interface
-	virtual unique_ptr<OperatorState> GetOperatorState(ClientContext &context) const;
+	virtual unique_ptr<OperatorState> GetOperatorState(ExecutionContext &context) const;
 	virtual unique_ptr<GlobalOperatorState> GetGlobalOperatorState(ClientContext &context) const;
 	virtual OperatorResultType Execute(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
 	                                   GlobalOperatorState &gstate, OperatorState &state) const;
@@ -131,6 +150,8 @@ public:
 	virtual unique_ptr<GlobalSourceState> GetGlobalSourceState(ClientContext &context) const;
 	virtual void GetData(ExecutionContext &context, DataChunk &chunk, GlobalSourceState &gstate,
 	                     LocalSourceState &lstate) const;
+	virtual idx_t GetBatchIndex(ExecutionContext &context, DataChunk &chunk, GlobalSourceState &gstate,
+	                            LocalSourceState &lstate) const;
 
 	virtual bool IsSource() const {
 		return false;
@@ -139,6 +160,13 @@ public:
 	virtual bool ParallelSource() const {
 		return false;
 	}
+
+	virtual bool SupportsBatchIndex() const {
+		return false;
+	}
+
+	//! Returns the current progress percentage, or a negative value if progress bars are not supported
+	virtual double GetProgress(ClientContext &context, GlobalSourceState &gstate) const;
 
 public:
 	// Sink interface
@@ -160,6 +188,9 @@ public:
 	virtual unique_ptr<LocalSinkState> GetLocalSinkState(ExecutionContext &context) const;
 	virtual unique_ptr<GlobalSinkState> GetGlobalSinkState(ClientContext &context) const;
 
+	//! The maximum amount of memory the operator should use per thread.
+	static idx_t GetMaxThreadMemory(ClientContext &context);
+
 	virtual bool IsSink() const {
 		return false;
 	}
@@ -168,9 +199,19 @@ public:
 		return false;
 	}
 
-	virtual bool SinkOrderMatters() const {
+	virtual bool RequiresBatchIndex() const {
 		return false;
 	}
+
+public:
+	// Pipeline construction
+	virtual vector<const PhysicalOperator *> GetSources() const;
+	bool AllSourcesSupportBatchIndex() const;
+
+	void AddPipeline(Executor &executor, shared_ptr<Pipeline> current, PipelineBuildState &state);
+	virtual void BuildPipelines(Executor &executor, Pipeline &current, PipelineBuildState &state);
+	void BuildChildPipeline(Executor &executor, Pipeline &current, PipelineBuildState &state,
+	                        PhysicalOperator *pipeline_child);
 };
 
 } // namespace duckdb

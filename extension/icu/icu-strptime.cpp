@@ -98,6 +98,9 @@ struct ICUStrptime : public ICUDateFunc {
 
 	static unique_ptr<FunctionData> StrpTimeBindFunction(ClientContext &context, ScalarFunction &bound_function,
 	                                                     vector<unique_ptr<Expression>> &arguments) {
+		if (arguments[1]->HasParameter()) {
+			throw ParameterNotResolvedException();
+		}
 		if (!arguments[1]->IsFoldable()) {
 			throw InvalidInputException("strptime format must be a constant");
 		}
@@ -132,8 +135,7 @@ struct ICUStrptime : public ICUDateFunc {
 		auto &func = (ScalarFunctionCatalogEntry &)*entry;
 		vector<LogicalType> types {LogicalType::VARCHAR, LogicalType::VARCHAR};
 		string error;
-		bool cast_parameters;
-		const idx_t best_function = Function::BindFunction(func.name, func.functions, types, error, cast_parameters);
+		const idx_t best_function = Function::BindFunction(func.name, func.functions, types, error);
 		if (best_function == DConstants::INVALID_INDEX) {
 			return;
 		}
@@ -204,17 +206,29 @@ struct ICUStrftime : public ICUDateFunc {
 				StrfTimeFormat format;
 				ParseFormatSpecifier(*ConstantVector::GetData<string_t>(fmt_arg), format);
 
-				UnaryExecutor::Execute<timestamp_t, string_t>(src_arg, result, args.size(), [&](timestamp_t input) {
-					return Operation(calendar.get(), input, tz_name, format, result);
-				});
+				UnaryExecutor::ExecuteWithNulls<timestamp_t, string_t>(
+				    src_arg, result, args.size(), [&](timestamp_t input, ValidityMask &mask, idx_t idx) {
+					    if (Timestamp::IsFinite(input)) {
+						    return Operation(calendar.get(), input, tz_name, format, result);
+					    } else {
+						    mask.SetInvalid(idx);
+						    return string_t();
+					    }
+				    });
 			}
 		} else {
-			BinaryExecutor::Execute<timestamp_t, string_t, string_t>(
-			    src_arg, fmt_arg, result, args.size(), [&](timestamp_t input, string_t format_specifier) {
-				    StrfTimeFormat format;
-				    ParseFormatSpecifier(format_specifier, format);
+			BinaryExecutor::ExecuteWithNulls<timestamp_t, string_t, string_t>(
+			    src_arg, fmt_arg, result, args.size(),
+			    [&](timestamp_t input, string_t format_specifier, ValidityMask &mask, idx_t idx) {
+				    if (Timestamp::IsFinite(input)) {
+					    StrfTimeFormat format;
+					    ParseFormatSpecifier(format_specifier, format);
 
-				    return Operation(calendar.get(), input, tz_name, format, result);
+					    return Operation(calendar.get(), input, tz_name, format, result);
+				    } else {
+					    mask.SetInvalid(idx);
+					    return string_t();
+				    }
 			    });
 		}
 	}
@@ -222,7 +236,7 @@ struct ICUStrftime : public ICUDateFunc {
 	static void AddBinaryTimestampFunction(const string &name, ClientContext &context) {
 		ScalarFunctionSet set(name);
 		set.AddFunction(ScalarFunction({LogicalType::TIMESTAMP_TZ, LogicalType::VARCHAR}, LogicalType::VARCHAR,
-		                               ICUStrftimeFunction, false, false, Bind));
+		                               ICUStrftimeFunction, Bind));
 
 		CreateScalarFunctionInfo func_info(set);
 		auto &catalog = Catalog::GetCatalog(context);

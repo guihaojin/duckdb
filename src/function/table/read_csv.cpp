@@ -4,6 +4,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/hive_partitioning.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
@@ -16,7 +17,7 @@ namespace duckdb {
 static unique_ptr<FunctionData> ReadCSVBind(ClientContext &context, TableFunctionBindInput &input,
                                             vector<LogicalType> &return_types, vector<string> &names) {
 	auto &config = DBConfig::GetConfig(context);
-	if (!config.enable_external_access) {
+	if (!config.options.enable_external_access) {
 		throw PermissionException("Scanning CSV files is disabled through configuration");
 	}
 	auto result = make_unique<ReadCSVData>();
@@ -46,7 +47,7 @@ static unique_ptr<FunctionData> ReadCSVBind(ClientContext &context, TableFunctio
 				if (val.type().id() != LogicalTypeId::VARCHAR) {
 					throw BinderException("read_csv requires a type specification as string");
 				}
-				return_types.emplace_back(TransformStringToLogicalTypeId(StringValue::Get(val)));
+				return_types.emplace_back(TransformStringToLogicalType(StringValue::Get(val)));
 			}
 			if (names.empty()) {
 				throw BinderException("read_csv requires at least a single column as input!");
@@ -57,6 +58,8 @@ static unique_ptr<FunctionData> ReadCSVBind(ClientContext &context, TableFunctio
 			options.normalize_names = BooleanValue::Get(kv.second);
 		} else if (loption == "filename") {
 			options.include_file_name = BooleanValue::Get(kv.second);
+		} else if (loption == "hive_partitioning") {
+			options.include_parsed_hive_partitions = BooleanValue::Get(kv.second);
 		} else {
 			options.SetReadOption(loption, kv.second, names);
 		}
@@ -81,23 +84,36 @@ static unique_ptr<FunctionData> ReadCSVBind(ClientContext &context, TableFunctio
 		D_ASSERT(return_types.size() == names.size());
 	}
 	if (result->options.include_file_name) {
+		result->filename_col_idx = names.size();
 		return_types.emplace_back(LogicalType::VARCHAR);
 		names.emplace_back("filename");
 	}
+
+	if (result->options.include_parsed_hive_partitions) {
+		auto partitions = ParseHivePartitions(result->files[0]);
+		result->hive_partition_col_idx = names.size();
+		for (auto &part : partitions) {
+			return_types.emplace_back(LogicalType::VARCHAR);
+			names.emplace_back(part.first);
+		}
+	}
+	result->options.names = names;
 	return move(result);
 }
 
-struct ReadCSVOperatorData : public FunctionOperatorData {
+struct ReadCSVOperatorData : public GlobalTableFunctionState {
 	//! The CSV reader
 	unique_ptr<BufferedCSVReader> csv_reader;
 	//! The index of the next file to read (i.e. current file + 1)
 	idx_t file_index;
+	//! Total File Size
+	idx_t file_size;
+	//! How many bytes were read up to this point
+	atomic<idx_t> bytes_read;
 };
 
-static unique_ptr<FunctionOperatorData> ReadCSVInit(ClientContext &context, const FunctionData *bind_data_p,
-                                                    const vector<column_t> &column_ids,
-                                                    TableFilterCollection *filters) {
-	auto &bind_data = (ReadCSVData &)*bind_data_p;
+static unique_ptr<GlobalTableFunctionState> ReadCSVInit(ClientContext &context, TableFunctionInitInput &input) {
+	auto &bind_data = (ReadCSVData &)*input.bind_data;
 	auto result = make_unique<ReadCSVOperatorData>();
 	if (bind_data.initial_reader) {
 		result->csv_reader = move(bind_data.initial_reader);
@@ -105,8 +121,7 @@ static unique_ptr<FunctionOperatorData> ReadCSVInit(ClientContext &context, cons
 		bind_data.options.file_path = bind_data.files[0];
 		result->csv_reader = make_unique<BufferedCSVReader>(context, bind_data.options, bind_data.sql_types);
 	}
-	bind_data.bytes_read = 0;
-	bind_data.file_size = result->csv_reader->GetFileSize();
+	result->file_size = result->csv_reader->GetFileSize();
 	result->file_index = 1;
 	return move(result);
 }
@@ -117,13 +132,12 @@ static unique_ptr<FunctionData> ReadCSVAutoBind(ClientContext &context, TableFun
 	return ReadCSVBind(context, input, return_types, names);
 }
 
-static void ReadCSVFunction(ClientContext &context, const FunctionData *bind_data_p,
-                            FunctionOperatorData *operator_state, DataChunk &output) {
-	auto &bind_data = (ReadCSVData &)*bind_data_p;
-	auto &data = (ReadCSVOperatorData &)*operator_state;
+static void ReadCSVFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &bind_data = (ReadCSVData &)*data_p.bind_data;
+	auto &data = (ReadCSVOperatorData &)*data_p.global_state;
 	do {
 		data.csv_reader->ParseCSV(output);
-		bind_data.bytes_read = data.csv_reader->bytes_in_chunk;
+		data.bytes_read = data.csv_reader->bytes_in_chunk;
 		if (output.size() == 0 && data.file_index < bind_data.files.size()) {
 			// exhausted this file, but we have more files we can read
 			// open the next file and increment the counter
@@ -134,10 +148,33 @@ static void ReadCSVFunction(ClientContext &context, const FunctionData *bind_dat
 			break;
 		}
 	} while (true);
+
 	if (bind_data.options.include_file_name) {
-		auto &col = output.data.back();
+		auto &col = output.data[bind_data.filename_col_idx];
 		col.SetValue(0, Value(data.csv_reader->options.file_path));
 		col.SetVectorType(VectorType::CONSTANT_VECTOR);
+	}
+	if (bind_data.options.include_parsed_hive_partitions) {
+		auto partitions = ParseHivePartitions(data.csv_reader->options.file_path);
+
+		idx_t i = bind_data.hive_partition_col_idx;
+
+		if (partitions.size() != (bind_data.options.names.size() - bind_data.hive_partition_col_idx)) {
+			throw IOException("Hive partition count mismatch, expected " +
+			                  std::to_string(bind_data.options.names.size() - bind_data.hive_partition_col_idx) +
+			                  " hive partitions, got " + std::to_string(partitions.size()) + "\n");
+		}
+
+		for (auto &part : partitions) {
+			if (bind_data.options.names[i] != part.first) {
+				throw IOException("Hive partition names mismatch, expected '" + bind_data.options.names[i] +
+				                  "' but found '" + part.first + "' for file '" + data.csv_reader->options.file_path +
+				                  "'");
+			}
+			auto &col = output.data[i++];
+			col.SetValue(0, Value(part.second));
+			col.SetVectorType(VectorType::CONSTANT_VECTOR);
+		}
 	}
 }
 
@@ -159,17 +196,19 @@ static void ReadCSVAddNamedParameters(TableFunction &table_function) {
 	table_function.named_parameters["normalize_names"] = LogicalType::BOOLEAN;
 	table_function.named_parameters["compression"] = LogicalType::VARCHAR;
 	table_function.named_parameters["filename"] = LogicalType::BOOLEAN;
+	table_function.named_parameters["hive_partitioning"] = LogicalType::BOOLEAN;
 	table_function.named_parameters["skip"] = LogicalType::BIGINT;
 	table_function.named_parameters["max_line_size"] = LogicalType::VARCHAR;
 	table_function.named_parameters["maximum_line_size"] = LogicalType::VARCHAR;
 }
 
-double CSVReaderProgress(ClientContext &context, const FunctionData *bind_data_p) {
-	auto &bind_data = (ReadCSVData &)*bind_data_p;
-	if (bind_data.file_size == 0) {
+double CSVReaderProgress(ClientContext &context, const FunctionData *bind_data_p,
+                         const GlobalTableFunctionState *global_state) {
+	auto &data = (const ReadCSVOperatorData &)*global_state;
+	if (data.file_size == 0) {
 		return 100;
 	}
-	auto percentage = (bind_data.bytes_read * 100.0) / bind_data.file_size;
+	auto percentage = (data.bytes_read * 100.0) / data.file_size;
 	return percentage;
 }
 

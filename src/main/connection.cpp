@@ -20,6 +20,7 @@ Connection::Connection(DatabaseInstance &database) : context(make_shared<ClientC
 	ConnectionManager::Get(database).AddConnection(*context);
 #ifdef DEBUG
 	EnableProfiling();
+	context->config.emit_profiler_output = false;
 #endif
 }
 
@@ -35,7 +36,7 @@ string Connection::GetProfilingInformation(ProfilerPrintFormat format) {
 	if (format == ProfilerPrintFormat::JSON) {
 		return profiler.ToJSON();
 	} else {
-		return profiler.ToString();
+		return profiler.QueryTreeToString();
 	}
 }
 
@@ -79,12 +80,12 @@ unique_ptr<MaterializedQueryResult> Connection::Query(unique_ptr<SQLStatement> s
 	return unique_ptr_cast<QueryResult, MaterializedQueryResult>(move(result));
 }
 
-unique_ptr<PendingQueryResult> Connection::PendingQuery(const string &query) {
-	return context->PendingQuery(query);
+unique_ptr<PendingQueryResult> Connection::PendingQuery(const string &query, bool allow_stream_result) {
+	return context->PendingQuery(query, allow_stream_result);
 }
 
-unique_ptr<PendingQueryResult> Connection::PendingQuery(unique_ptr<SQLStatement> statement) {
-	return context->PendingQuery(move(statement));
+unique_ptr<PendingQueryResult> Connection::PendingQuery(unique_ptr<SQLStatement> statement, bool allow_stream_result) {
+	return context->PendingQuery(move(statement), allow_stream_result);
 }
 
 unique_ptr<PreparedStatement> Connection::Prepare(const string &query) {
@@ -120,7 +121,7 @@ unique_ptr<LogicalOperator> Connection::ExtractPlan(const string &query) {
 }
 
 void Connection::Append(TableDescription &description, DataChunk &chunk) {
-	ChunkCollection collection;
+	ChunkCollection collection(*context);
 	collection.Append(chunk);
 	Append(description, collection);
 }
@@ -247,6 +248,9 @@ void Connection::SetAutoCommit(bool auto_commit) {
 
 bool Connection::IsAutoCommit() {
 	return context->transaction.IsAutoCommit();
+}
+bool Connection::HasActiveTransaction() {
+	return context->transaction.HasActiveTransaction();
 }
 
 } // namespace duckdb

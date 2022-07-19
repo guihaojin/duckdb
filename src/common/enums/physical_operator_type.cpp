@@ -19,6 +19,8 @@ string PhysicalOperatorToString(PhysicalOperatorType type) {
 		return "LIMIT";
 	case PhysicalOperatorType::LIMIT_PERCENT:
 		return "LIMIT_PERCENT";
+	case PhysicalOperatorType::STREAMING_LIMIT:
+		return "STREAMING_LIMIT";
 	case PhysicalOperatorType::RESERVOIR_SAMPLE:
 		return "RESERVOIR_SAMPLE";
 	case PhysicalOperatorType::STREAMING_SAMPLE:
@@ -31,8 +33,8 @@ string PhysicalOperatorToString(PhysicalOperatorType type) {
 		return "STREAMING_WINDOW";
 	case PhysicalOperatorType::UNNEST:
 		return "UNNEST";
-	case PhysicalOperatorType::SIMPLE_AGGREGATE:
-		return "SIMPLE_AGGREGATE";
+	case PhysicalOperatorType::UNGROUPED_AGGREGATE:
+		return "UNGROUPED_AGGREGATE";
 	case PhysicalOperatorType::HASH_GROUP_BY:
 		return "HASH_GROUP_BY";
 	case PhysicalOperatorType::PERFECT_HASH_GROUP_BY:
@@ -117,6 +119,8 @@ string PhysicalOperatorToString(PhysicalOperatorType type) {
 		return "INOUT_FUNCTION";
 	case PhysicalOperatorType::CREATE_TYPE:
 		return "CREATE_TYPE";
+	case PhysicalOperatorType::RESULT_COLLECTOR:
+		return "RESULT_COLLECTOR";
 	case PhysicalOperatorType::INVALID:
 		break;
 	}

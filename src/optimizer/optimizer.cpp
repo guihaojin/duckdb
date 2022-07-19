@@ -19,6 +19,7 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/main/config.hpp"
 
+#include "duckdb/optimizer/rule/equal_or_null_simplification.hpp"
 #include "duckdb/optimizer/rule/in_clause_simplification.hpp"
 
 namespace duckdb {
@@ -32,8 +33,10 @@ Optimizer::Optimizer(Binder &binder, ClientContext &context) : context(context),
 	rewriter.rules.push_back(make_unique<DatePartSimplificationRule>(rewriter));
 	rewriter.rules.push_back(make_unique<ComparisonSimplificationRule>(rewriter));
 	rewriter.rules.push_back(make_unique<InClauseSimplificationRule>(rewriter));
+	rewriter.rules.push_back(make_unique<EqualOrNullSimplification>(rewriter));
 	rewriter.rules.push_back(make_unique<MoveConstantsRule>(rewriter));
 	rewriter.rules.push_back(make_unique<LikeOptimizationRule>(rewriter));
+	rewriter.rules.push_back(make_unique<RegexOptimizationRule>(rewriter));
 	rewriter.rules.push_back(make_unique<EmptyNeedleRemovalRule>(rewriter));
 	rewriter.rules.push_back(make_unique<EnumComparisonRule>(rewriter));
 
@@ -47,7 +50,7 @@ Optimizer::Optimizer(Binder &binder, ClientContext &context) : context(context),
 
 void Optimizer::RunOptimizer(OptimizerType type, const std::function<void()> &callback) {
 	auto &config = DBConfig::GetConfig(context);
-	if (config.disabled_optimizers.find(type) != config.disabled_optimizers.end()) {
+	if (config.options.disabled_optimizers.find(type) != config.options.disabled_optimizers.end()) {
 		// optimizer is marked as disabled: skip
 		return;
 	}
@@ -80,7 +83,7 @@ unique_ptr<LogicalOperator> Optimizer::Optimize(unique_ptr<LogicalOperator> plan
 	});
 
 	RunOptimizer(OptimizerType::IN_CLAUSE, [&]() {
-		InClauseRewriter rewriter(*this);
+		InClauseRewriter rewriter(context, *this);
 		plan = rewriter.Rewrite(move(plan));
 	});
 

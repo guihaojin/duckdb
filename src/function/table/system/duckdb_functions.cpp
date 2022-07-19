@@ -17,7 +17,7 @@
 
 namespace duckdb {
 
-struct DuckDBFunctionsData : public FunctionOperatorData {
+struct DuckDBFunctionsData : public GlobalTableFunctionState {
 	DuckDBFunctionsData() : offset(0), offset_in_entry(0) {
 	}
 
@@ -71,9 +71,7 @@ static void ExtractFunctionsFromSchema(ClientContext &context, SchemaCatalogEntr
 	            [&](CatalogEntry *entry) { result.entries.push_back(entry); });
 }
 
-unique_ptr<FunctionOperatorData> DuckDBFunctionsInit(ClientContext &context, const FunctionData *bind_data,
-                                                     const vector<column_t> &column_ids,
-                                                     TableFilterCollection *filters) {
+unique_ptr<GlobalTableFunctionState> DuckDBFunctionsInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_unique<DuckDBFunctionsData>();
 
 	// scan all the schemas for tables and collect themand collect them
@@ -122,9 +120,7 @@ struct ScalarFunctionExtractor {
 	}
 
 	static Value GetVarArgs(ScalarFunctionCatalogEntry &entry, idx_t offset) {
-		return entry.functions[offset].varargs.id() == LogicalTypeId::INVALID
-		           ? Value()
-		           : Value(entry.functions[offset].varargs.ToString());
+		return !entry.functions[offset].HasVarArgs() ? Value() : Value(entry.functions[offset].varargs.ToString());
 	}
 
 	static Value GetMacroDefinition(ScalarFunctionCatalogEntry &entry, idx_t offset) {
@@ -132,7 +128,7 @@ struct ScalarFunctionExtractor {
 	}
 
 	static Value HasSideEffects(ScalarFunctionCatalogEntry &entry, idx_t offset) {
-		return Value::BOOLEAN(entry.functions[offset].has_side_effects);
+		return Value::BOOLEAN(entry.functions[offset].side_effects == FunctionSideEffects::HAS_SIDE_EFFECTS);
 	}
 };
 
@@ -170,9 +166,7 @@ struct AggregateFunctionExtractor {
 	}
 
 	static Value GetVarArgs(AggregateFunctionCatalogEntry &entry, idx_t offset) {
-		return entry.functions[offset].varargs.id() == LogicalTypeId::INVALID
-		           ? Value()
-		           : Value(entry.functions[offset].varargs.ToString());
+		return !entry.functions[offset].HasVarArgs() ? Value() : Value(entry.functions[offset].varargs.ToString());
 	}
 
 	static Value GetMacroDefinition(AggregateFunctionCatalogEntry &entry, idx_t offset) {
@@ -180,7 +174,7 @@ struct AggregateFunctionExtractor {
 	}
 
 	static Value HasSideEffects(AggregateFunctionCatalogEntry &entry, idx_t offset) {
-		return Value::BOOLEAN(entry.functions[offset].has_side_effects);
+		return Value::BOOLEAN(entry.functions[offset].side_effects == FunctionSideEffects::HAS_SIDE_EFFECTS);
 	}
 };
 
@@ -338,9 +332,7 @@ struct TableFunctionExtractor {
 	}
 
 	static Value GetVarArgs(TableFunctionCatalogEntry &entry, idx_t offset) {
-		return entry.functions[offset].varargs.id() == LogicalTypeId::INVALID
-		           ? Value()
-		           : Value(entry.functions[offset].varargs.ToString());
+		return !entry.functions[offset].HasVarArgs() ? Value() : Value(entry.functions[offset].varargs.ToString());
 	}
 
 	static Value GetMacroDefinition(TableFunctionCatalogEntry &entry, idx_t offset) {
@@ -392,9 +384,7 @@ struct PragmaFunctionExtractor {
 	}
 
 	static Value GetVarArgs(PragmaFunctionCatalogEntry &entry, idx_t offset) {
-		return entry.functions[offset].varargs.id() == LogicalTypeId::INVALID
-		           ? Value()
-		           : Value(entry.functions[offset].varargs.ToString());
+		return !entry.functions[offset].HasVarArgs() ? Value() : Value(entry.functions[offset].varargs.ToString());
 	}
 
 	static Value GetMacroDefinition(PragmaFunctionCatalogEntry &entry, idx_t offset) {
@@ -442,9 +432,8 @@ bool ExtractFunctionData(StandardEntry *entry, idx_t function_idx, DataChunk &ou
 	return function_idx + 1 == OP::FunctionCount(function);
 }
 
-void DuckDBFunctionsFunction(ClientContext &context, const FunctionData *bind_data,
-                             FunctionOperatorData *operator_state, DataChunk &output) {
-	auto &data = (DuckDBFunctionsData &)*operator_state;
+void DuckDBFunctionsFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &data = (DuckDBFunctionsData &)*data_p.global_state;
 	if (data.offset >= data.entries.size()) {
 		// finished returning values
 		return;

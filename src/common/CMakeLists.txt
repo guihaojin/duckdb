@@ -8,13 +8,17 @@ add_subdirectory(types)
 add_subdirectory(value_operations)
 add_subdirectory(vector_operations)
 
+if(${EXIT_TIME_DESTRUCTORS_WARNING})
+  set(CMAKE_CXX_FLAGS_DEBUG
+      "${CMAKE_CXX_FLAGS_DEBUG} -Wno-exit-time-destructors")
+endif()
+
 add_library_unity(
   duckdb_common
   OBJECT
   allocator.cpp
   arrow_wrapper.cpp
   assert.cpp
-  radix.cpp
   compressed_file_system.cpp
   constants.cpp
   checksum.cpp

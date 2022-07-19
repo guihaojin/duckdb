@@ -21,7 +21,10 @@ public:
 	}
 };
 
-struct ParquetMetaDataOperatorData : public FunctionOperatorData {
+struct ParquetMetaDataOperatorData : public GlobalTableFunctionState {
+	explicit ParquetMetaDataOperatorData(Allocator &allocator) : collection(allocator) {
+	}
+
 	idx_t file_index;
 	ChunkCollection collection;
 
@@ -132,7 +135,7 @@ void ParquetMetaDataOperatorData::LoadFileMetaData(ClientContext &context, const
 	auto reader = make_unique<ParquetReader>(context, file_path, parquet_options);
 	idx_t count = 0;
 	DataChunk current_chunk;
-	current_chunk.Initialize(return_types);
+	current_chunk.Initialize(context, return_types);
 	auto meta_data = reader->GetFileMetadata();
 	vector<LogicalType> column_types;
 	vector<idx_t> schema_indexes;
@@ -338,7 +341,7 @@ void ParquetMetaDataOperatorData::LoadSchemaData(ClientContext &context, const v
 	auto reader = make_unique<ParquetReader>(context, file_path, parquet_options);
 	idx_t count = 0;
 	DataChunk current_chunk;
-	current_chunk.Initialize(return_types);
+	current_chunk.Initialize(context, return_types);
 	auto meta_data = reader->GetFileMetadata();
 	for (idx_t col_idx = 0; col_idx < meta_data->schema.size(); col_idx++) {
 		auto &column = meta_data->schema[col_idx];
@@ -393,7 +396,7 @@ template <bool SCHEMA>
 unique_ptr<FunctionData> ParquetMetaDataBind(ClientContext &context, TableFunctionBindInput &input,
                                              vector<LogicalType> &return_types, vector<string> &names) {
 	auto &config = DBConfig::GetConfig(context);
-	if (!config.enable_external_access) {
+	if (!config.options.enable_external_access) {
 		throw PermissionException("Scanning Parquet files is disabled through configuration");
 	}
 	if (SCHEMA) {
@@ -415,13 +418,11 @@ unique_ptr<FunctionData> ParquetMetaDataBind(ClientContext &context, TableFuncti
 }
 
 template <bool SCHEMA>
-unique_ptr<FunctionOperatorData> ParquetMetaDataInit(ClientContext &context, const FunctionData *bind_data_p,
-                                                     const vector<column_t> &column_ids,
-                                                     TableFilterCollection *filters) {
-	auto &bind_data = (ParquetMetaDataBindData &)*bind_data_p;
+unique_ptr<GlobalTableFunctionState> ParquetMetaDataInit(ClientContext &context, TableFunctionInitInput &input) {
+	auto &bind_data = (ParquetMetaDataBindData &)*input.bind_data;
 	D_ASSERT(!bind_data.files.empty());
 
-	auto result = make_unique<ParquetMetaDataOperatorData>();
+	auto result = make_unique<ParquetMetaDataOperatorData>(Allocator::Get(context));
 	if (SCHEMA) {
 		result->LoadSchemaData(context, bind_data.return_types, bind_data.files[0]);
 	} else {
@@ -432,10 +433,9 @@ unique_ptr<FunctionOperatorData> ParquetMetaDataInit(ClientContext &context, con
 }
 
 template <bool SCHEMA>
-void ParquetMetaDataImplementation(ClientContext &context, const FunctionData *bind_data_p,
-                                   FunctionOperatorData *operator_state, DataChunk &output) {
-	auto &data = (ParquetMetaDataOperatorData &)*operator_state;
-	auto &bind_data = (ParquetMetaDataBindData &)*bind_data_p;
+void ParquetMetaDataImplementation(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	auto &data = (ParquetMetaDataOperatorData &)*data_p.global_state;
+	auto &bind_data = (ParquetMetaDataBindData &)*data_p.bind_data;
 	while (true) {
 		auto chunk = data.collection.Fetch();
 		if (!chunk) {
@@ -462,20 +462,12 @@ void ParquetMetaDataImplementation(ClientContext &context, const FunctionData *b
 
 ParquetMetaDataFunction::ParquetMetaDataFunction()
     : TableFunction("parquet_metadata", {LogicalType::VARCHAR}, ParquetMetaDataImplementation<false>,
-                    ParquetMetaDataBind<false>, ParquetMetaDataInit<false>, /* statistics */ nullptr,
-                    /* cleanup */ nullptr,
-                    /* dependency */ nullptr, nullptr,
-                    /* pushdown_complex_filter */ nullptr, /* to_string */ nullptr, nullptr, nullptr, nullptr, nullptr,
-                    nullptr, false, false, nullptr) {
+                    ParquetMetaDataBind<false>, ParquetMetaDataInit<false>) {
 }
 
 ParquetSchemaFunction::ParquetSchemaFunction()
     : TableFunction("parquet_schema", {LogicalType::VARCHAR}, ParquetMetaDataImplementation<true>,
-                    ParquetMetaDataBind<true>, ParquetMetaDataInit<true>, /* statistics */ nullptr,
-                    /* cleanup */ nullptr,
-                    /* dependency */ nullptr, nullptr,
-                    /* pushdown_complex_filter */ nullptr, /* to_string */ nullptr, nullptr, nullptr, nullptr, nullptr,
-                    nullptr, false, false, nullptr) {
+                    ParquetMetaDataBind<true>, ParquetMetaDataInit<true>) {
 }
 
 } // namespace duckdb

@@ -11,6 +11,7 @@
 #include "duckdb/parser/parsed_data/parse_info.hpp"
 #include "duckdb/parser/column_definition.hpp"
 #include "duckdb/common/enums/catalog_type.hpp"
+#include "duckdb/parser/constraint.hpp"
 
 namespace duckdb {
 
@@ -29,6 +30,8 @@ struct AlterInfo : public ParseInfo {
 	~AlterInfo() override;
 
 	AlterType type;
+	//! if exists
+	bool if_exists;
 	//! Schema name to alter
 	string schema;
 	//! Entry name to alter
@@ -74,7 +77,7 @@ enum class AlterTableType : uint8_t {
 	REMOVE_COLUMN = 4,
 	ALTER_COLUMN_TYPE = 5,
 	SET_DEFAULT = 6,
-	FOREIGN_KEY_CONSTRAINT = 7
+	FOREIGN_KEY_CONSTRAINT = 7,
 };
 
 struct AlterTableInfo : public AlterInfo {
@@ -144,13 +147,15 @@ public:
 // RemoveColumnInfo
 //===--------------------------------------------------------------------===//
 struct RemoveColumnInfo : public AlterTableInfo {
-	RemoveColumnInfo(string schema, string table, string removed_column, bool if_exists);
+	RemoveColumnInfo(string schema, string table, string removed_column, bool if_exists, bool cascade);
 	~RemoveColumnInfo() override;
 
 	//! The column to remove
 	string removed_column;
 	//! Whether or not an error should be thrown if the column does not exist
 	bool if_exists;
+	//! Whether or not the column should be removed if a dependency conflict arises (used by GENERATED columns)
+	bool cascade;
 
 public:
 	unique_ptr<AlterInfo> Copy() const override;

@@ -3,12 +3,14 @@
 #include "duckdb/parser/transformer.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 #include "duckdb/parser/statement/create_statement.hpp"
+#include "duckdb/parser/statement/extension_statement.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/parser/statement/update_statement.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/tableref/expressionlistref.hpp"
 #include "postgres_parser.hpp"
 #include "duckdb/parser/query_error_context.hpp"
+#include "duckdb/parser/parser_extension.hpp"
 
 #include "parser/parser.hpp"
 
@@ -18,13 +20,29 @@ Parser::Parser(ParserOptions options_p) : options(options_p) {
 }
 
 void Parser::ParseQuery(const string &query) {
-	Transformer transformer;
+	Transformer transformer(options.max_expression_depth);
 	{
 		PostgresParser::SetPreserveIdentifierCase(options.preserve_identifier_case);
 		PostgresParser parser;
 		parser.Parse(query);
 
 		if (!parser.success) {
+			if (options.extensions) {
+				for (auto &ext : *options.extensions) {
+					D_ASSERT(ext.parse_function);
+					auto result = ext.parse_function(ext.parser_info.get(), query);
+					if (result.type == ParserExtensionResultType::PARSE_SUCCESSFUL) {
+						auto statement = make_unique<ExtensionStatement>(ext, move(result.parse_data));
+						statement->stmt_length = query.size();
+						statement->stmt_location = 0;
+						statements.push_back(move(statement));
+						return;
+					}
+					if (result.type == ParserExtensionResultType::DISPLAY_EXTENSION_ERROR) {
+						throw ParserException(result.error);
+					}
+				}
+			}
 			throw ParserException(QueryErrorContext::Format(query, parser.error_message, parser.error_location - 1));
 		}
 

@@ -22,7 +22,7 @@ class PhysicalRangeJoin : public PhysicalComparisonJoin {
 public:
 	class LocalSortedTable {
 	public:
-		LocalSortedTable(Allocator &allocator, const PhysicalRangeJoin &op, const idx_t child);
+		LocalSortedTable(ClientContext &context, const PhysicalRangeJoin &op, const idx_t child);
 
 		void Sink(DataChunk &input, GlobalSortState &global_sort_state);
 
@@ -65,7 +65,7 @@ public:
 		}
 
 		inline idx_t BlockSize(idx_t i) const {
-			return global_sort_state.sorted_blocks[0]->radix_sorting_data[i].count;
+			return global_sort_state.sorted_blocks[0]->radix_sorting_data[i]->count;
 		}
 
 		void Combine(LocalSortedTable &ltable);
@@ -83,23 +83,36 @@ public:
 		//! The total number of rows in the RHS
 		atomic<idx_t> count;
 		//! A bool indicating for each tuple in the RHS if they found a match (only used in FULL OUTER JOIN)
-		unique_ptr<bool[]> found_match;
+		unsafe_unique_array<bool> found_match;
 		//! Memory usage per thread
 		idx_t memory_per_thread;
 	};
 
 public:
-	PhysicalRangeJoin(LogicalOperator &op, PhysicalOperatorType type, unique_ptr<PhysicalOperator> left,
+	PhysicalRangeJoin(LogicalComparisonJoin &op, PhysicalOperatorType type, unique_ptr<PhysicalOperator> left,
 	                  unique_ptr<PhysicalOperator> right, vector<JoinCondition> cond, JoinType join_type,
 	                  idx_t estimated_cardinality);
 
+	// Projection mappings
+	using ProjectionMapping = vector<column_t>;
+	ProjectionMapping left_projection_map;
+	ProjectionMapping right_projection_map;
+
+	//!	The full set of types (left + right child)
+	vector<LogicalType> unprojected_types;
+
 public:
 	// Gather the result values and slice the payload columns to those values.
-	static void SliceSortedPayload(DataChunk &payload, GlobalSortState &state, const idx_t block_idx,
-	                               const SelectionVector &result, const idx_t result_count, const idx_t left_cols = 0);
+	// Returns a buffer handle to the pinned heap block (if any)
+	static BufferHandle SliceSortedPayload(DataChunk &payload, GlobalSortState &state, const idx_t block_idx,
+	                                       const SelectionVector &result, const idx_t result_count,
+	                                       const idx_t left_cols = 0);
 	// Apply a tail condition to the current selection
 	static idx_t SelectJoinTail(const ExpressionType &condition, Vector &left, Vector &right,
 	                            const SelectionVector *sel, idx_t count, SelectionVector *true_sel);
+
+	//!	Utility to project full width internal chunks to projected results
+	void ProjectResult(DataChunk &chunk, DataChunk &result) const;
 };
 
 } // namespace duckdb

@@ -11,6 +11,7 @@
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/types/string_type.hpp"
 #include "duckdb/common/types.hpp"
+#include "duckdb/common/types/interval.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/windows_undefs.hpp"
 
@@ -41,7 +42,7 @@ inline string_t NullValue() {
 
 template <>
 inline char *NullValue() {
-	return (char *)NullValue<const char *>();
+	return (char *)NullValue<const char *>(); // NOLINT
 }
 
 template <>

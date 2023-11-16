@@ -47,13 +47,35 @@ public:
 		return std::static_pointer_cast<T, ObjectCacheEntry>(object);
 	}
 
-	void Put(string key, shared_ptr<ObjectCacheEntry> value) {
+	template <class T, class... Args>
+	shared_ptr<T> GetOrCreate(const string &key, Args &&...args) {
 		lock_guard<mutex> glock(lock);
-		cache[key] = move(value);
+
+		auto entry = cache.find(key);
+		if (entry == cache.end()) {
+			auto value = make_shared<T>(args...);
+			cache[key] = value;
+			return value;
+		}
+		auto object = entry->second;
+		if (!object || object->GetObjectType() != T::ObjectType()) {
+			return nullptr;
+		}
+		return std::static_pointer_cast<T, ObjectCacheEntry>(object);
 	}
 
-	static ObjectCache &GetObjectCache(ClientContext &context);
-	static bool ObjectCacheEnabled(ClientContext &context);
+	void Put(string key, shared_ptr<ObjectCacheEntry> value) {
+		lock_guard<mutex> glock(lock);
+		cache[key] = std::move(value);
+	}
+
+	void Delete(const string &key) {
+		lock_guard<mutex> glock(lock);
+		cache.erase(key);
+	}
+
+	DUCKDB_API static ObjectCache &GetObjectCache(ClientContext &context);
+	DUCKDB_API static bool ObjectCacheEnabled(ClientContext &context);
 
 private:
 	//! Object Cache

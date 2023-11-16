@@ -7,36 +7,63 @@
 //===----------------------------------------------------------------------===//
 
 #pragma once
+
+#include "duckdb/execution/index/fixed_size_allocator.hpp"
+#include "duckdb/execution/index/art/art.hpp"
 #include "duckdb/execution/index/art/node.hpp"
 
 namespace duckdb {
 
-class Node48 : public Node {
+//! Node48 holds up to 48 Node children. It contains a child_index array which can be directly indexed by the key
+//! byte, and which contains the position of the child node in the children array
+class Node48 {
 public:
-	explicit Node48(size_t compression_length);
-	uint8_t child_index[256];
+	//! Delete copy constructors, as any Node48 can never own its memory
+	Node48(const Node48 &) = delete;
+	Node48 &operator=(const Node48 &) = delete;
 
-	SwizzleablePointer children[48];
+	//! Number of non-null children
+	uint8_t count;
+	//! Array containing all possible partial key bytes, those not set have an EMPTY_MARKER
+	uint8_t child_index[Node::NODE_256_CAPACITY];
+	//! Node pointers to the child nodes
+	Node children[Node::NODE_48_CAPACITY];
 
 public:
-	//! Get position of a byte, returns -1 if not exists
-	idx_t GetChildPos(uint8_t k) override;
-	//! Get the position of the first child that is greater or equal to the specific byte, or DConstants::INVALID_INDEX
-	//! if there are no children matching the criteria
-	idx_t GetChildGreaterEqual(uint8_t k, bool &equal) override;
-	//! Get the next position in the node, or DConstants::INVALID_INDEX if there is no next position
-	idx_t GetNextPos(idx_t pos) override;
-	//! Get Node48 Child
-	Node *GetChild(ART &art, idx_t pos) override;
+	//! Get a new Node48, might cause a new buffer allocation, and initialize it
+	static Node48 &New(ART &art, Node &node);
+	//! Free the node (and its subtree)
+	static void Free(ART &art, Node &node);
 
-	idx_t GetMin() override;
-	//! Replace child pointer
-	void ReplaceChildPointer(idx_t pos, Node *node) override;
+	//! Initializes all the fields of the node while growing a Node16 to a Node48
+	static Node48 &GrowNode16(ART &art, Node &node48, Node &node16);
+	//! Initializes all fields of the node while shrinking a Node256 to a Node48
+	static Node48 &ShrinkNode256(ART &art, Node &node48, Node &node256);
 
-	//! Insert node in Node48
-	static void Insert(Node *&node, uint8_t key_byte, Node *child);
+	//! Initializes a merge by incrementing the buffer IDs of the node
+	void InitializeMerge(ART &art, const ARTFlags &flags);
 
-	//! Shrink to node 16
-	static void Erase(Node *&node, int pos, ART &art);
+	//! Insert a child node at byte
+	static void InsertChild(ART &art, Node &node, const uint8_t byte, const Node child);
+	//! Delete the child node at byte
+	static void DeleteChild(ART &art, Node &node, const uint8_t byte);
+
+	//! Replace the child node at byte
+	inline void ReplaceChild(const uint8_t byte, const Node child) {
+		D_ASSERT(child_index[byte] != Node::EMPTY_MARKER);
+		children[child_index[byte]] = child;
+	}
+
+	//! Get the (immutable) child for the respective byte in the node
+	optional_ptr<const Node> GetChild(const uint8_t byte) const;
+	//! Get the child for the respective byte in the node
+	optional_ptr<Node> GetChildMutable(const uint8_t byte);
+	//! Get the first (immutable) child that is greater or equal to the specific byte
+	optional_ptr<const Node> GetNextChild(uint8_t &byte) const;
+	//! Get the first child that is greater or equal to the specific byte
+	optional_ptr<Node> GetNextChildMutable(uint8_t &byte);
+
+	//! Vacuum the children of the node
+	void Vacuum(ART &art, const ARTFlags &flags);
 };
 } // namespace duckdb

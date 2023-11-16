@@ -8,10 +8,10 @@ using ValidityBytes = TemplatedValidityMask<uint8_t>;
 
 static void ComputeStringEntrySizes(UnifiedVectorFormat &vdata, idx_t entry_sizes[], const idx_t ser_count,
                                     const SelectionVector &sel, const idx_t offset) {
-	auto strings = (string_t *)vdata.data;
+	auto strings = UnifiedVectorFormat::GetData<string_t>(vdata);
 	for (idx_t i = 0; i < ser_count; i++) {
 		auto idx = sel.get_index(i);
-		auto str_idx = vdata.sel->get_index(idx) + offset;
+		auto str_idx = vdata.sel->get_index(idx + offset);
 		if (vdata.validity.RowIsValid(str_idx)) {
 			entry_sizes[i] += sizeof(uint32_t) + strings[str_idx].GetSize();
 		}
@@ -42,7 +42,7 @@ static void ComputeListEntrySizes(Vector &v, UnifiedVectorFormat &vdata, idx_t e
 	idx_t list_entry_sizes[STANDARD_VECTOR_SIZE];
 	for (idx_t i = 0; i < ser_count; i++) {
 		auto idx = sel.get_index(i);
-		auto source_idx = vdata.sel->get_index(idx) + offset;
+		auto source_idx = vdata.sel->get_index(idx + offset);
 		if (vdata.validity.RowIsValid(source_idx)) {
 			auto list_entry = list_data[source_idx];
 
@@ -116,14 +116,14 @@ void RowOperations::ComputeEntrySizes(Vector &v, idx_t entry_sizes[], idx_t vcou
 template <class T>
 static void TemplatedHeapScatter(UnifiedVectorFormat &vdata, const SelectionVector &sel, idx_t count, idx_t col_idx,
                                  data_ptr_t *key_locations, data_ptr_t *validitymask_locations, idx_t offset) {
-	auto source = (T *)vdata.data;
+	auto source = UnifiedVectorFormat::GetData<T>(vdata);
 	if (!validitymask_locations) {
 		for (idx_t i = 0; i < count; i++) {
 			auto idx = sel.get_index(i);
-			auto source_idx = vdata.sel->get_index(idx) + offset;
+			auto source_idx = vdata.sel->get_index(idx + offset);
 
 			auto target = (T *)key_locations[i];
-			Store<T>(source[source_idx], (data_ptr_t)target);
+			Store<T>(source[source_idx], data_ptr_cast(target));
 			key_locations[i] += sizeof(T);
 		}
 	} else {
@@ -133,10 +133,10 @@ static void TemplatedHeapScatter(UnifiedVectorFormat &vdata, const SelectionVect
 		const auto bit = ~(1UL << idx_in_entry);
 		for (idx_t i = 0; i < count; i++) {
 			auto idx = sel.get_index(i);
-			auto source_idx = vdata.sel->get_index(idx) + offset;
+			auto source_idx = vdata.sel->get_index(idx + offset);
 
 			auto target = (T *)key_locations[i];
-			Store<T>(source[source_idx], (data_ptr_t)target);
+			Store<T>(source[source_idx], data_ptr_cast(target));
 			key_locations[i] += sizeof(T);
 
 			// set the validitymask
@@ -152,18 +152,18 @@ static void HeapScatterStringVector(Vector &v, idx_t vcount, const SelectionVect
 	UnifiedVectorFormat vdata;
 	v.ToUnifiedFormat(vcount, vdata);
 
-	auto strings = (string_t *)vdata.data;
+	auto strings = UnifiedVectorFormat::GetData<string_t>(vdata);
 	if (!validitymask_locations) {
 		for (idx_t i = 0; i < ser_count; i++) {
 			auto idx = sel.get_index(i);
-			auto source_idx = vdata.sel->get_index(idx) + offset;
+			auto source_idx = vdata.sel->get_index(idx + offset);
 			if (vdata.validity.RowIsValid(source_idx)) {
 				auto &string_entry = strings[source_idx];
 				// store string size
 				Store<uint32_t>(string_entry.GetSize(), key_locations[i]);
 				key_locations[i] += sizeof(uint32_t);
 				// store the string
-				memcpy(key_locations[i], string_entry.GetDataUnsafe(), string_entry.GetSize());
+				memcpy(key_locations[i], string_entry.GetData(), string_entry.GetSize());
 				key_locations[i] += string_entry.GetSize();
 			}
 		}
@@ -174,14 +174,14 @@ static void HeapScatterStringVector(Vector &v, idx_t vcount, const SelectionVect
 		const auto bit = ~(1UL << idx_in_entry);
 		for (idx_t i = 0; i < ser_count; i++) {
 			auto idx = sel.get_index(i);
-			auto source_idx = vdata.sel->get_index(idx) + offset;
+			auto source_idx = vdata.sel->get_index(idx + offset);
 			if (vdata.validity.RowIsValid(source_idx)) {
 				auto &string_entry = strings[source_idx];
 				// store string size
 				Store<uint32_t>(string_entry.GetSize(), key_locations[i]);
 				key_locations[i] += sizeof(uint32_t);
 				// store the string
-				memcpy(key_locations[i], string_entry.GetDataUnsafe(), string_entry.GetSize());
+				memcpy(key_locations[i], string_entry.GetData(), string_entry.GetSize());
 				key_locations[i] += string_entry.GetSize();
 			} else {
 				// set the validitymask
@@ -252,7 +252,7 @@ static void HeapScatterListVector(Vector &v, idx_t vcount, const SelectionVector
 
 	for (idx_t i = 0; i < ser_count; i++) {
 		auto idx = sel.get_index(i);
-		auto source_idx = vdata.sel->get_index(idx) + offset;
+		auto source_idx = vdata.sel->get_index(idx + offset);
 		if (!vdata.validity.RowIsValid(source_idx)) {
 			if (validitymask_locations) {
 				// set the row validitymask for this column to invalid
@@ -289,7 +289,7 @@ static void HeapScatterListVector(Vector &v, idx_t vcount, const SelectionVector
 
 			// serialize list validity
 			for (idx_t entry_idx = 0; entry_idx < next; entry_idx++) {
-				auto list_idx = list_vdata.sel->get_index(entry_idx) + entry_offset;
+				auto list_idx = list_vdata.sel->get_index(entry_idx + entry_offset);
 				if (!list_vdata.validity.RowIsValid(list_idx)) {
 					*(list_validitymask_location) &= ~(1UL << entry_offset_in_byte);
 				}

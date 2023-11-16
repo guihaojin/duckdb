@@ -14,11 +14,11 @@ namespace duckdb {
 
 class WriteOverflowStringsToDisk : public OverflowStringWriter {
 public:
-	explicit WriteOverflowStringsToDisk(DatabaseInstance &db);
+	explicit WriteOverflowStringsToDisk(BlockManager &block_manager);
 	~WriteOverflowStringsToDisk() override;
 
-	//! The checkpoint manager
-	DatabaseInstance &db;
+	//! The block manager
+	BlockManager &block_manager;
 
 	//! Temporary buffer
 	BufferHandle handle;
@@ -30,10 +30,12 @@ public:
 	static constexpr idx_t STRING_SPACE = Storage::BLOCK_SIZE - sizeof(block_id_t);
 
 public:
-	void WriteString(string_t string, block_id_t &result_block, int32_t &result_offset) override;
+	void WriteString(UncompressedStringSegmentState &state, string_t string, block_id_t &result_block,
+	                 int32_t &result_offset) override;
+	void Flush() override;
 
 private:
-	void AllocateNewBlock(block_id_t new_block_id);
+	void AllocateNewBlock(UncompressedStringSegmentState &state, block_id_t new_block_id);
 };
 
 } // namespace duckdb

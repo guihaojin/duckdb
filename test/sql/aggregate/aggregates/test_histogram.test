@@ -5,6 +5,9 @@
 statement ok
 PRAGMA enable_verification
 
+statement ok
+PRAGMA verify_external
+
 query I
 select histogram(NULL)
 ----
@@ -105,8 +108,6 @@ query I
 SELECT histogram(CAST('2022-01-02' AS DATE));
 ----
 {2022-01-02=1}
-
-require vector_size 512
 
 query II rowsort
 select g,histogram(g) over (partition by g%2)

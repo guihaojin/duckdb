@@ -4,10 +4,11 @@
 
 require skip_reload
 
-require vector_size 512
-
 statement ok
 PRAGMA enable_verification
+
+statement ok
+PRAGMA verify_external
 
 statement ok
 SELECT SETSEED(0.8675309);
@@ -124,7 +125,7 @@ FROM (
 	FROM quantile
 ) tbl;
 ----
-[True, True, True]
+[true, true, true]
 
 query I
 SELECT [
@@ -138,7 +139,7 @@ FROM (
 	FROM quantile
 ) tbl;
 ----
-[True, True, True]
+[true, true, true]
 
 # Errors
 statement error
@@ -201,6 +202,9 @@ SELECT CASE
 # Test reservoir quantile
 statement ok
 PRAGMA disable_verification;
+
+statement ok
+PRAGMA disable_verify_external;
 
 statement ok
 SELECT reservoir_quantile(r, 0.9)  from quantile

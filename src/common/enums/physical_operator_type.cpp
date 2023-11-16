@@ -47,6 +47,10 @@ string PhysicalOperatorToString(PhysicalOperatorType type) {
 		return "PROJECTION";
 	case PhysicalOperatorType::COPY_TO_FILE:
 		return "COPY_TO_FILE";
+	case PhysicalOperatorType::BATCH_COPY_TO_FILE:
+		return "BATCH_COPY_TO_FILE";
+	case PhysicalOperatorType::FIXED_BATCH_COPY_TO_FILE:
+		return "FIXED_BATCH_COPY_TO_FILE";
 	case PhysicalOperatorType::DELIM_JOIN:
 		return "DELIM_JOIN";
 	case PhysicalOperatorType::BLOCKWISE_NL_JOIN:
@@ -61,12 +65,20 @@ string PhysicalOperatorToString(PhysicalOperatorType type) {
 		return "PIECEWISE_MERGE_JOIN";
 	case PhysicalOperatorType::IE_JOIN:
 		return "IE_JOIN";
+	case PhysicalOperatorType::ASOF_JOIN:
+		return "ASOF_JOIN";
 	case PhysicalOperatorType::CROSS_PRODUCT:
 		return "CROSS_PRODUCT";
+	case PhysicalOperatorType::POSITIONAL_JOIN:
+		return "POSITIONAL_JOIN";
+	case PhysicalOperatorType::POSITIONAL_SCAN:
+		return "POSITIONAL_SCAN";
 	case PhysicalOperatorType::UNION:
 		return "UNION";
 	case PhysicalOperatorType::INSERT:
 		return "INSERT";
+	case PhysicalOperatorType::BATCH_INSERT:
+		return "BATCH_INSERT";
 	case PhysicalOperatorType::DELETE_OPERATOR:
 		return "DELETE";
 	case PhysicalOperatorType::UPDATE:
@@ -77,6 +89,8 @@ string PhysicalOperatorToString(PhysicalOperatorType type) {
 		return "CREATE_TABLE";
 	case PhysicalOperatorType::CREATE_TABLE_AS:
 		return "CREATE_TABLE_AS";
+	case PhysicalOperatorType::BATCH_CREATE_TABLE_AS:
+		return "BATCH_CREATE_TABLE_AS";
 	case PhysicalOperatorType::CREATE_INDEX:
 		return "CREATE_INDEX";
 	case PhysicalOperatorType::EXPLAIN:
@@ -89,8 +103,12 @@ string PhysicalOperatorToString(PhysicalOperatorType type) {
 		return "VACUUM";
 	case PhysicalOperatorType::RECURSIVE_CTE:
 		return "REC_CTE";
+	case PhysicalOperatorType::CTE:
+		return "CTE";
 	case PhysicalOperatorType::RECURSIVE_CTE_SCAN:
 		return "REC_CTE_SCAN";
+	case PhysicalOperatorType::CTE_SCAN:
+		return "CTE_SCAN";
 	case PhysicalOperatorType::EXPRESSION_SCAN:
 		return "EXPRESSION_SCAN";
 	case PhysicalOperatorType::ALTER:
@@ -115,14 +133,24 @@ string PhysicalOperatorToString(PhysicalOperatorType type) {
 		return "EXPORT";
 	case PhysicalOperatorType::SET:
 		return "SET";
+	case PhysicalOperatorType::RESET:
+		return "RESET";
 	case PhysicalOperatorType::LOAD:
 		return "LOAD";
 	case PhysicalOperatorType::INOUT_FUNCTION:
 		return "INOUT_FUNCTION";
 	case PhysicalOperatorType::CREATE_TYPE:
 		return "CREATE_TYPE";
+	case PhysicalOperatorType::ATTACH:
+		return "ATTACH";
+	case PhysicalOperatorType::DETACH:
+		return "DETACH";
 	case PhysicalOperatorType::RESULT_COLLECTOR:
 		return "RESULT_COLLECTOR";
+	case PhysicalOperatorType::EXTENSION:
+		return "EXTENSION";
+	case PhysicalOperatorType::PIVOT:
+		return "PIVOT";
 	case PhysicalOperatorType::INVALID:
 		break;
 	}

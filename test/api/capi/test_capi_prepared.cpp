@@ -5,7 +5,7 @@ using namespace std;
 
 TEST_CASE("Test prepared statements in C API", "[capi]") {
 	CAPITester tester;
-	unique_ptr<CAPIResult> result;
+	duckdb::unique_ptr<CAPIResult> result;
 	duckdb_result res;
 	duckdb_prepared_statement stmt = nullptr;
 	duckdb_state status;
@@ -17,9 +17,11 @@ TEST_CASE("Test prepared statements in C API", "[capi]") {
 	REQUIRE(status == DuckDBSuccess);
 	REQUIRE(stmt != nullptr);
 
-	status = duckdb_bind_boolean(stmt, 1, 1);
+	status = duckdb_bind_boolean(stmt, 1, true);
 	REQUIRE(status == DuckDBSuccess);
-	status = duckdb_bind_boolean(stmt, 2, 1);
+
+	// Parameter index 2 is out of bounds
+	status = duckdb_bind_boolean(stmt, 2, true);
 	REQUIRE(status == DuckDBError);
 
 	status = duckdb_execute_prepared(stmt, &res);
@@ -55,6 +57,18 @@ TEST_CASE("Test prepared statements in C API", "[capi]") {
 	status = duckdb_execute_prepared(stmt, &res);
 	REQUIRE(status == DuckDBSuccess);
 	REQUIRE(duckdb_hugeint_to_double(duckdb_value_hugeint(&res, 0, 0)) == 64.0);
+	duckdb_destroy_result(&res);
+
+	// Fetching a DECIMAL from a non-DECIMAL result returns 0
+	duckdb_decimal decimal = duckdb_double_to_decimal(634.3453, 7, 4);
+	duckdb_bind_decimal(stmt, 1, decimal);
+	status = duckdb_execute_prepared(stmt, &res);
+	REQUIRE(status == DuckDBSuccess);
+	duckdb_decimal result_decimal = duckdb_value_decimal(&res, 0, 0);
+	REQUIRE(result_decimal.scale == 0);
+	REQUIRE(result_decimal.width == 0);
+	REQUIRE(result_decimal.value.upper == 0);
+	REQUIRE(result_decimal.value.lower == 0);
 	duckdb_destroy_result(&res);
 
 	duckdb_bind_uint8(stmt, 1, 8);
@@ -125,7 +139,10 @@ TEST_CASE("Test prepared statements in C API", "[capi]") {
 	REQUIRE(status == DuckDBSuccess);
 	REQUIRE(stmt != nullptr);
 
-	REQUIRE(duckdb_bind_varchar_length(stmt, 1, "\x00\x40\x41", 3) == DuckDBError);
+	// invalid unicode
+	REQUIRE(duckdb_bind_varchar_length(stmt, 1, "\x80", 1) == DuckDBError);
+	// we can bind null values, though!
+	REQUIRE(duckdb_bind_varchar_length(stmt, 1, "\x00\x40\x41", 3) == DuckDBSuccess);
 	duckdb_bind_varchar_length(stmt, 1, "hello world", 5);
 	status = duckdb_execute_prepared(stmt, &res);
 	REQUIRE(status == DuckDBSuccess);
@@ -253,4 +270,103 @@ TEST_CASE("Test prepared statements in C API", "[capi]") {
 	memcpy(malloced_data, "hello\0", 6);
 	REQUIRE(string((char *)malloced_data) == "hello");
 	duckdb_free(malloced_data);
+
+	status = duckdb_prepare(tester.connection, "SELECT sum(i) FROM a WHERE i > ?", &stmt);
+	REQUIRE(status == DuckDBSuccess);
+	REQUIRE(stmt != nullptr);
+	REQUIRE(duckdb_nparams(stmt) == 1);
+	REQUIRE(duckdb_param_type(nullptr, 0) == DUCKDB_TYPE_INVALID);
+	REQUIRE(duckdb_param_type(stmt, 1) == DUCKDB_TYPE_INTEGER);
+
+	duckdb_destroy_prepare(&stmt);
+}
+
+TEST_CASE("Test duckdb_param_type", "[capi]") {
+	duckdb_database db;
+	duckdb_connection conn;
+	duckdb_prepared_statement stmt;
+
+	REQUIRE(duckdb_open("", &db) == DuckDBSuccess);
+	REQUIRE(duckdb_connect(db, &conn) == DuckDBSuccess);
+	REQUIRE(duckdb_prepare(conn, "select $1::integer, $2::integer", &stmt) == DuckDBSuccess);
+
+	REQUIRE(duckdb_param_type(stmt, 2) == DUCKDB_TYPE_INTEGER);
+	REQUIRE(duckdb_bind_null(stmt, 1) == DuckDBSuccess);
+	REQUIRE(duckdb_bind_int32(stmt, 2, 10) == DuckDBSuccess);
+
+	duckdb_result result;
+	REQUIRE(duckdb_execute_prepared(stmt, &result) == DuckDBSuccess);
+	REQUIRE(duckdb_param_type(stmt, 2) == DUCKDB_TYPE_INTEGER);
+	duckdb_clear_bindings(stmt);
+	duckdb_destroy_result(&result);
+
+	duckdb_destroy_prepare(&stmt);
+	duckdb_disconnect(&conn);
+	duckdb_close(&db);
+}
+
+TEST_CASE("Test prepared statements with named parameters in C API", "[capi]") {
+	CAPITester tester;
+	duckdb::unique_ptr<CAPIResult> result;
+	duckdb_result res;
+	duckdb_prepared_statement stmt = nullptr;
+	duckdb_state status;
+
+	// open the database in in-memory mode
+	REQUIRE(tester.OpenDatabase(nullptr));
+
+	status = duckdb_prepare(tester.connection, "SELECT CAST($my_val AS BIGINT)", &stmt);
+	REQUIRE(status == DuckDBSuccess);
+	REQUIRE(stmt != nullptr);
+
+	idx_t parameter_index;
+	// test invalid name
+	status = duckdb_bind_parameter_index(stmt, &parameter_index, "invalid");
+	REQUIRE(status == DuckDBError);
+
+	status = duckdb_bind_parameter_index(stmt, &parameter_index, "my_val");
+	REQUIRE(status == DuckDBSuccess);
+
+	idx_t param_count = duckdb_nparams(stmt);
+	duckdb::vector<string> names;
+	for (idx_t i = 0; i < param_count; i++) {
+		auto name = duckdb_parameter_name(stmt, i + 1);
+		names.push_back(std::string(name));
+		duckdb_free((void *)name);
+	}
+
+	REQUIRE(duckdb_parameter_name(stmt, 0) == (const char *)NULL);
+	REQUIRE(duckdb_parameter_name(stmt, 2) == (const char *)NULL);
+
+	duckdb::vector<string> expected_names = {"my_val"};
+	REQUIRE(names.size() == expected_names.size());
+	for (idx_t i = 0; i < expected_names.size(); i++) {
+		auto &name = names[i];
+		auto &expected_name = expected_names[i];
+		REQUIRE(name == expected_name);
+	}
+
+	status = duckdb_bind_boolean(stmt, parameter_index, 1);
+	REQUIRE(status == DuckDBSuccess);
+	status = duckdb_bind_boolean(stmt, parameter_index + 1, 1);
+	REQUIRE(status == DuckDBError);
+
+	status = duckdb_execute_prepared(stmt, &res);
+	REQUIRE(status == DuckDBSuccess);
+	REQUIRE(duckdb_value_int64(&res, 0, 0) == 1);
+	duckdb_destroy_result(&res);
+
+	// Clear the bindings, don't rebind the parameter index
+	status = duckdb_clear_bindings(stmt);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_bind_boolean(stmt, parameter_index, 1);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_execute_prepared(stmt, &res);
+	REQUIRE(status == DuckDBSuccess);
+	REQUIRE(duckdb_value_int64(&res, 0, 0) == 1);
+	duckdb_destroy_result(&res);
+
+	duckdb_destroy_prepare(&stmt);
 }

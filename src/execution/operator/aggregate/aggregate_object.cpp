@@ -1,18 +1,29 @@
 #include "duckdb/execution/operator/aggregate/aggregate_object.hpp"
+
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
+#include "duckdb/planner/expression/bound_window_expression.hpp"
 
 namespace duckdb {
 
 AggregateObject::AggregateObject(AggregateFunction function, FunctionData *bind_data, idx_t child_count,
-                                 idx_t payload_size, bool distinct, PhysicalType return_type, Expression *filter)
-    : function(move(function)), bind_data(bind_data), child_count(child_count), payload_size(payload_size),
-      distinct(distinct), return_type(return_type), filter(filter) {
+                                 idx_t payload_size, AggregateType aggr_type, PhysicalType return_type,
+                                 Expression *filter)
+    : function(std::move(function)),
+      bind_data_wrapper(bind_data ? make_shared<FunctionDataWrapper>(bind_data->Copy()) : nullptr),
+      child_count(child_count), payload_size(payload_size), aggr_type(aggr_type), return_type(return_type),
+      filter(filter) {
 }
 
 AggregateObject::AggregateObject(BoundAggregateExpression *aggr)
     : AggregateObject(aggr->function, aggr->bind_info.get(), aggr->children.size(),
-                      AlignValue(aggr->function.state_size()), aggr->distinct, aggr->return_type.InternalType(),
+                      AlignValue(aggr->function.state_size()), aggr->aggr_type, aggr->return_type.InternalType(),
                       aggr->filter.get()) {
+}
+
+AggregateObject::AggregateObject(BoundWindowExpression &window)
+    : AggregateObject(*window.aggregate, window.bind_info.get(), window.children.size(),
+                      AlignValue(window.aggregate->state_size()), AggregateType::NON_DISTINCT,
+                      window.return_type.InternalType(), window.filter_expr.get()) {
 }
 
 vector<AggregateObject> AggregateObject::CreateAggregateObjects(const vector<BoundAggregateExpression *> &bindings) {
@@ -24,13 +35,13 @@ vector<AggregateObject> AggregateObject::CreateAggregateObjects(const vector<Bou
 	return aggregates;
 }
 
-AggregateFilterData::AggregateFilterData(Allocator &allocator, Expression &filter_expr,
+AggregateFilterData::AggregateFilterData(ClientContext &context, Expression &filter_expr,
                                          const vector<LogicalType> &payload_types)
-    : filter_executor(allocator, &filter_expr), true_sel(STANDARD_VECTOR_SIZE) {
+    : filter_executor(context, &filter_expr), true_sel(STANDARD_VECTOR_SIZE) {
 	if (payload_types.empty()) {
 		return;
 	}
-	filtered_payload.Initialize(allocator, payload_types);
+	filtered_payload.Initialize(Allocator::Get(context), payload_types);
 }
 
 idx_t AggregateFilterData::ApplyFilter(DataChunk &payload) {
@@ -44,7 +55,7 @@ idx_t AggregateFilterData::ApplyFilter(DataChunk &payload) {
 AggregateFilterDataSet::AggregateFilterDataSet() {
 }
 
-void AggregateFilterDataSet::Initialize(Allocator &allocator, const vector<AggregateObject> &aggregates,
+void AggregateFilterDataSet::Initialize(ClientContext &context, const vector<AggregateObject> &aggregates,
                                         const vector<LogicalType> &payload_types) {
 	bool has_filters = false;
 	for (auto &aggregate : aggregates) {
@@ -61,7 +72,7 @@ void AggregateFilterDataSet::Initialize(Allocator &allocator, const vector<Aggre
 	for (idx_t aggr_idx = 0; aggr_idx < aggregates.size(); aggr_idx++) {
 		auto &aggr = aggregates[aggr_idx];
 		if (aggr.filter) {
-			filter_data[aggr_idx] = make_unique<AggregateFilterData>(allocator, *aggr.filter, payload_types);
+			filter_data[aggr_idx] = make_uniq<AggregateFilterData>(context, *aggr.filter, payload_types);
 		}
 	}
 }

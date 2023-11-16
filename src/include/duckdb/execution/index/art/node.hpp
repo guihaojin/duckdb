@@ -8,114 +8,126 @@
 
 #pragma once
 
-#include "duckdb/execution/index/art/art_key.hpp"
-#include "duckdb/common/common.hpp"
-#include "duckdb/storage/meta_block_writer.hpp"
-#include "duckdb/storage/meta_block_reader.hpp"
-#include "duckdb/storage/index.hpp"
+#include "duckdb/common/assert.hpp"
+#include "duckdb/common/optional_ptr.hpp"
+#include "duckdb/common/to_string.hpp"
+#include "duckdb/common/typedefs.hpp"
+#include "duckdb/common/limits.hpp"
+#include "duckdb/execution/index/index_pointer.hpp"
+#include "duckdb/execution/index/fixed_size_allocator.hpp"
 
 namespace duckdb {
-enum class NodeType : uint8_t { N4 = 0, N16 = 1, N48 = 2, N256 = 3, NLeaf = 4 };
+
+// classes
+enum class NType : uint8_t {
+	PREFIX = 1,
+	LEAF = 2,
+	NODE_4 = 3,
+	NODE_16 = 4,
+	NODE_48 = 5,
+	NODE_256 = 6,
+	LEAF_INLINED = 7,
+};
+
 class ART;
-class Node;
+class Prefix;
+class MetadataReader;
+class MetadataWriter;
 
-struct SwizzleablePointer {
-	~SwizzleablePointer();
-	SwizzleablePointer(duckdb::MetaBlockReader &reader);
-	SwizzleablePointer() : pointer(0) {};
+// structs
+struct BlockPointer;
+struct ARTFlags;
+struct MetaBlockPointer;
 
-	uint64_t pointer;
-
-	//! Transforms from Node* to uint64_t
-	SwizzleablePointer &operator=(const Node *ptr);
-	friend bool operator!=(const SwizzleablePointer &s_ptr, const uint64_t &ptr);
+//! The Node is the pointer class of the ART index.
+//! It inherits from the IndexPointer, and adds ART-specific functionality
+class Node : public IndexPointer {
+public:
+	//! Node thresholds
+	static constexpr uint8_t NODE_48_SHRINK_THRESHOLD = 12;
+	static constexpr uint8_t NODE_256_SHRINK_THRESHOLD = 36;
+	//! Node sizes
+	static constexpr uint8_t NODE_4_CAPACITY = 4;
+	static constexpr uint8_t NODE_16_CAPACITY = 16;
+	static constexpr uint8_t NODE_48_CAPACITY = 48;
+	static constexpr uint16_t NODE_256_CAPACITY = 256;
+	//! Other constants
+	static constexpr uint8_t EMPTY_MARKER = 48;
+	static constexpr uint8_t LEAF_SIZE = 4;
+	static constexpr uint8_t PREFIX_SIZE = 15;
+	static constexpr idx_t AND_ROW_ID = 0x00FFFFFFFFFFFFFF;
 
 public:
-	//! Extracts block info from swizzled pointer
-	BlockPointer GetSwizzledBlockInfo();
-	//! Checks if pointer is swizzled
-	bool IsSwizzled();
-	//! Deletes the underlying object (if necessary) and set the pointer to null_ptr
-	void Reset();
-	//! Unswizzle the pointer (if possible)
-	Node *Unswizzle(ART &art);
+	//! Get a new pointer to a node, might cause a new buffer allocation, and initialize it
+	static void New(ART &art, Node &node, const NType type);
+	//! Free the node (and its subtree)
+	static void Free(ART &art, Node &node);
 
-	BlockPointer Serialize(ART &art, duckdb::MetaBlockWriter &writer);
+	//! Get references to the allocator
+	static FixedSizeAllocator &GetAllocator(const ART &art, const NType type);
+	//! Get a (immutable) reference to the node. If dirty is false, then T should be a const class
+	template <class NODE>
+	static inline const NODE &Ref(const ART &art, const Node ptr, const NType type) {
+		return *(GetAllocator(art, type).Get<const NODE>(ptr, false));
+	}
+	//! Get a (const) reference to the node. If dirty is false, then T should be a const class
+	template <class NODE>
+	static inline NODE &RefMutable(const ART &art, const Node ptr, const NType type) {
+		return *(GetAllocator(art, type).Get<NODE>(ptr));
+	}
+
+	//! Replace the child node at byte
+	void ReplaceChild(const ART &art, const uint8_t byte, const Node child) const;
+	//! Insert the child node at byte
+	static void InsertChild(ART &art, Node &node, const uint8_t byte, const Node child);
+	//! Delete the child node at byte
+	static void DeleteChild(ART &art, Node &node, Node &prefix, const uint8_t byte);
+
+	//! Get the child (immutable) for the respective byte in the node
+	optional_ptr<const Node> GetChild(ART &art, const uint8_t byte) const;
+	//! Get the child for the respective byte in the node
+	optional_ptr<Node> GetChildMutable(ART &art, const uint8_t byte) const;
+	//! Get the first child (immutable) that is greater or equal to the specific byte
+	optional_ptr<const Node> GetNextChild(ART &art, uint8_t &byte) const;
+	//! Get the first child that is greater or equal to the specific byte
+	optional_ptr<Node> GetNextChildMutable(ART &art, uint8_t &byte) const;
+
+	//! Returns the string representation of the node, or only traverses and verifies the node and its subtree
+	string VerifyAndToString(ART &art, const bool only_verify) const;
+	//! Returns the capacity of the node
+	idx_t GetCapacity() const;
+	//! Returns the matching node type for a given count
+	static NType GetARTNodeTypeByCount(const idx_t count);
+
+	//! Initializes a merge by incrementing the buffer IDs of a node and its subtree
+	void InitializeMerge(ART &art, const ARTFlags &flags);
+	//! Merge another node into this node
+	bool Merge(ART &art, Node &other);
+	//! Merge two nodes by first resolving their prefixes
+	bool ResolvePrefixes(ART &art, Node &other);
+	//! Merge two nodes that have no prefix or the same prefix
+	bool MergeInternal(ART &art, Node &other);
+
+	//! Vacuum all nodes that exceed their respective vacuum thresholds
+	void Vacuum(ART &art, const ARTFlags &flags);
+
+	//! Get the row ID (8th to 63rd bit)
+	inline row_t GetRowId() const {
+		return Get() & AND_ROW_ID;
+	}
+	//! Set the row ID (8th to 63rd bit)
+	inline void SetRowId(const row_t row_id) {
+		Set((Get() & AND_METADATA) | row_id);
+	}
+
+	//! Returns the type of the node, which is held in the metadata
+	inline NType GetType() const {
+		return NType(GetMetadata());
+	}
+
+	//! Assign operator
+	inline void operator=(const IndexPointer &ptr) {
+		Set(ptr.Get());
+	}
 };
-
-struct InternalType {
-	InternalType(Node *n);
-	void Set(uint8_t *key_p, uint16_t key_size_p, SwizzleablePointer *children_p, uint16_t children_size_p);
-	uint8_t *key;
-	uint16_t key_size;
-	SwizzleablePointer *children;
-	uint16_t children_size;
-};
-
-class Node {
-public:
-	static const uint8_t EMPTY_MARKER = 48;
-
-public:
-	Node(NodeType type, size_t compressed_prefix_size);
-	virtual ~Node() {
-	}
-
-	//! length of the compressed path (prefix)
-	uint32_t prefix_length;
-	//! number of non-null children
-	uint16_t count;
-	//! node type
-	NodeType type;
-	//! compressed path (prefix)
-	unique_ptr<uint8_t[]> prefix;
-
-	//! Get the position of a child corresponding exactly to the specific byte, returns DConstants::INVALID_INDEX if not
-	//! exists
-	virtual idx_t GetChildPos(uint8_t k) {
-		return DConstants::INVALID_INDEX;
-	}
-	//! Get the position of the first child that is greater or equal to the specific byte, or DConstants::INVALID_INDEX
-	//! if there are no children matching the criteria
-	virtual idx_t GetChildGreaterEqual(uint8_t k, bool &equal) {
-		throw InternalException("Unimplemented GetChildGreaterEqual for ARTNode");
-	}
-	//! Get the position of the biggest element in node
-	virtual idx_t GetMin();
-
-	//! Serialize this Node
-	BlockPointer Serialize(ART &art, duckdb::MetaBlockWriter &writer);
-
-	static Node *Deserialize(ART &art, idx_t block_id, idx_t offset);
-
-	//! Get the next position in the node, or DConstants::INVALID_INDEX if there is no next position. if pos ==
-	//! DConstants::INVALID_INDEX, then the first valid position in the node will be returned.
-	virtual idx_t GetNextPos(idx_t pos) {
-		return DConstants::INVALID_INDEX;
-	}
-	//! Get the child at the specified position in the node. pos should be between [0, count). Throws an assertion if
-	//! the element is not found.
-	virtual Node *GetChild(ART &art, idx_t pos);
-
-	//! Replaces the pointer
-	virtual void ReplaceChildPointer(idx_t pos, Node *node);
-
-	//! Compare the key with the prefix of the node, return the number matching bytes
-	static uint32_t PrefixMismatch(Node *node, Key &key, uint64_t depth);
-	//! Insert leaf into inner node
-	static void InsertLeaf(Node *&node, uint8_t key, Node *new_node);
-	//! Erase entry from node
-	static void Erase(Node *&node, idx_t pos, ART &art);
-
-protected:
-	//! Copies the prefix from the source to the destination node
-	static void CopyPrefix(Node *src, Node *dst);
-
-private:
-	//! Serialize Internal Nodes
-	BlockPointer SerializeInternal(ART &art, duckdb::MetaBlockWriter &writer, InternalType &internal_type);
-	//! Deserialize Internal Nodes
-	void DeserializeInternal(duckdb::MetaBlockReader &reader, uint32_t prefix_length_p);
-};
-
 } // namespace duckdb

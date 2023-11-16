@@ -11,13 +11,10 @@
 #include "duckdb/transaction/rollback_state.hpp"
 #include "duckdb/common/pair.hpp"
 
-#include <unordered_map>
-
 namespace duckdb {
 constexpr uint32_t UNDO_ENTRY_HEADER_SIZE = sizeof(UndoFlags) + sizeof(uint32_t);
 
-UndoBuffer::UndoBuffer(const shared_ptr<ClientContext> &context) : allocator(BufferAllocator::Get(*context)) {
-	D_ASSERT(context);
+UndoBuffer::UndoBuffer(ClientContext &context_p) : allocator(BufferAllocator::Get(context_p)) {
 }
 
 data_ptr_t UndoBuffer::CreateEntry(UndoFlags type, idx_t len) {
@@ -127,9 +124,18 @@ void UndoBuffer::Cleanup() {
 	CleanupState state;
 	UndoBuffer::IteratorState iterator_state;
 	IterateEntries(iterator_state, [&](UndoFlags type, data_ptr_t data) { state.CleanupEntry(type, data); });
+
+	// possibly vacuum indexes
+	for (const auto &table : state.indexed_tables) {
+		table.second->info->indexes.Scan([&](Index &index) {
+			index.Vacuum();
+			return false;
+		});
+	}
 }
 
-void UndoBuffer::Commit(UndoBuffer::IteratorState &iterator_state, WriteAheadLog *log, transaction_t commit_id) {
+void UndoBuffer::Commit(UndoBuffer::IteratorState &iterator_state, optional_ptr<WriteAheadLog> log,
+                        transaction_t commit_id) {
 	CommitState state(commit_id, log);
 	if (log) {
 		// commit WITH write ahead log

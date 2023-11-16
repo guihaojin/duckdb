@@ -11,15 +11,13 @@
 #include "duckdb/common/enums/statement_type.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/winapi.hpp"
+#include "duckdb/common/preserved_error.hpp"
+#include "duckdb/main/client_properties.hpp"
 
 namespace duckdb {
+struct BoxRendererConfig;
 
 enum class QueryResultType : uint8_t { MATERIALIZED_RESULT, STREAM_RESULT, PENDING_RESULT };
-
-//! A set of properties from the client context that can be used to interpret the query result
-struct ClientProperties {
-	string timezone;
-};
 
 class BaseQueryResult {
 public:
@@ -27,7 +25,7 @@ public:
 	DUCKDB_API BaseQueryResult(QueryResultType type, StatementType statement_type, StatementProperties properties,
 	                           vector<LogicalType> types, vector<string> names);
 	//! Creates an unsuccessful query result with error condition
-	DUCKDB_API BaseQueryResult(QueryResultType type, string error);
+	DUCKDB_API BaseQueryResult(QueryResultType type, PreservedError error);
 	DUCKDB_API virtual ~BaseQueryResult();
 
 	//! The type of the result (MATERIALIZED or STREAMING)
@@ -40,15 +38,21 @@ public:
 	vector<LogicalType> types;
 	//! The names of the result
 	vector<string> names;
-	//! Whether or not execution was successful
-	bool success;
-	//! The error string (in case execution was not successful)
-	string error;
 
 public:
-	DUCKDB_API bool HasError();
-	DUCKDB_API const string &GetError();
+	[[noreturn]] DUCKDB_API void ThrowError(const string &prepended_message = "") const;
+	DUCKDB_API void SetError(PreservedError error);
+	DUCKDB_API bool HasError() const;
+	DUCKDB_API const ExceptionType &GetErrorType() const;
+	DUCKDB_API const std::string &GetError();
+	DUCKDB_API PreservedError &GetErrorObject();
 	DUCKDB_API idx_t ColumnCount();
+
+protected:
+	//! Whether or not execution was successful
+	bool success;
+	//! The error (in case execution was not successful)
+	PreservedError error;
 };
 
 //! The QueryResult object holds the result of a query. It can either be a MaterializedQueryResult, in which case the
@@ -60,7 +64,7 @@ public:
 	DUCKDB_API QueryResult(QueryResultType type, StatementType statement_type, StatementProperties properties,
 	                       vector<LogicalType> types, vector<string> names, ClientProperties client_properties);
 	//! Creates an unsuccessful query result with error condition
-	DUCKDB_API QueryResult(QueryResultType type, string error);
+	DUCKDB_API QueryResult(QueryResultType type, PreservedError error);
 	DUCKDB_API virtual ~QueryResult() override;
 
 	//! Properties from the client context
@@ -69,6 +73,25 @@ public:
 	unique_ptr<QueryResult> next;
 
 public:
+	template <class TARGET>
+	TARGET &Cast() {
+		if (type != TARGET::TYPE) {
+			throw InternalException("Failed to cast query result to type - query result type mismatch");
+		}
+		return reinterpret_cast<TARGET &>(*this);
+	}
+
+	template <class TARGET>
+	const TARGET &Cast() const {
+		if (type != TARGET::TYPE) {
+			throw InternalException("Failed to cast query result to type - query result type mismatch");
+		}
+		return reinterpret_cast<const TARGET &>(*this);
+	}
+
+public:
+	//! Returns the name of the column for the given index
+	DUCKDB_API const string &ColumnName(idx_t index) const;
 	//! Fetches a DataChunk of normalized (flat) vectors from the query result.
 	//! Returns nullptr if there are no more results to fetch.
 	DUCKDB_API virtual unique_ptr<DataChunk> Fetch();
@@ -77,26 +100,29 @@ public:
 	DUCKDB_API virtual unique_ptr<DataChunk> FetchRaw() = 0;
 	//! Converts the QueryResult to a string
 	DUCKDB_API virtual string ToString() = 0;
+	//! Converts the QueryResult to a box-rendered string
+	DUCKDB_API virtual string ToBox(ClientContext &context, const BoxRendererConfig &config);
 	//! Prints the QueryResult to the console
 	DUCKDB_API void Print();
 	//! Returns true if the two results are identical; false otherwise. Note that this method is destructive; it calls
 	//! Fetch() until both results are exhausted. The data in the results will be lost.
 	DUCKDB_API bool Equals(QueryResult &other);
 
-	DUCKDB_API bool TryFetch(unique_ptr<DataChunk> &result, string &error) {
+	bool TryFetch(unique_ptr<DataChunk> &result, PreservedError &error) {
 		try {
 			result = Fetch();
 			return success;
+		} catch (const Exception &ex) {
+			error = PreservedError(ex);
+			return false;
 		} catch (std::exception &ex) {
-			error = ex.what();
+			error = PreservedError(ex);
 			return false;
 		} catch (...) {
-			error = "Unknown error in Fetch";
+			error = PreservedError("Unknown error in Fetch");
 			return false;
 		}
 	}
-
-	static string GetConfigTimezone(QueryResult &query_result);
 
 private:
 	class QueryResultIterator;
@@ -116,15 +142,19 @@ private:
 	//! The row-based query result iterator. Invoking the
 	class QueryResultIterator {
 	public:
-		explicit QueryResultIterator(QueryResult *result) : current_row(*this, 0), result(result), base_row(0) {
+		explicit QueryResultIterator(optional_ptr<QueryResult> result_p)
+		    : current_row(*this, 0), result(result_p), base_row(0) {
 			if (result) {
 				chunk = shared_ptr<DataChunk>(result->Fetch().release());
+				if (!chunk) {
+					result = nullptr;
+				}
 			}
 		}
 
 		QueryResultRow current_row;
 		shared_ptr<DataChunk> chunk;
-		QueryResult *result;
+		optional_ptr<QueryResult> result;
 		idx_t base_row;
 
 	public:
@@ -135,7 +165,7 @@ private:
 			current_row.row++;
 			if (current_row.row >= chunk->size()) {
 				base_row += chunk->size();
-				chunk = result->Fetch();
+				chunk = shared_ptr<DataChunk>(result->Fetch().release());
 				current_row.row = 0;
 				if (!chunk || chunk->size() == 0) {
 					// exhausted all rows
@@ -159,10 +189,10 @@ private:
 	};
 
 public:
-	DUCKDB_API QueryResultIterator begin() {
+	QueryResultIterator begin() {
 		return QueryResultIterator(this);
 	}
-	DUCKDB_API QueryResultIterator end() {
+	QueryResultIterator end() {
 		return QueryResultIterator(nullptr);
 	}
 

@@ -2,7 +2,6 @@
 #include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
-#include "duckdb/storage/statistics/numeric_statistics.hpp"
 #include "duckdb/optimizer/expression_rewriter.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 
@@ -20,7 +19,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundConjun
 		// we have a constant in a conjunction
 		// we (1) either prune the child
 		// or (2) replace the entire conjunction with a constant
-		auto constant = ExpressionExecutor::EvaluateScalar(*child);
+		auto constant = ExpressionExecutor::EvaluateScalar(context, *child);
 		if (constant.IsNull()) {
 			continue;
 		}
@@ -51,16 +50,16 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundConjun
 			expr_idx--;
 			continue;
 		}
-		*expr_ptr = make_unique<BoundConstantExpression>(Value::BOOLEAN(constant_value));
+		*expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(constant_value));
 		return PropagateExpression(*expr_ptr);
 	}
 	if (expr.children.empty()) {
 		// if there are no children left, replace the conjunction with TRUE (for AND) or FALSE (for OR)
-		*expr_ptr = make_unique<BoundConstantExpression>(Value::BOOLEAN(is_and));
+		*expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(is_and));
 		return PropagateExpression(*expr_ptr);
 	} else if (expr.children.size() == 1) {
 		// if there is one child left, replace the conjunction with that one child
-		*expr_ptr = move(expr.children[0]);
+		*expr_ptr = std::move(expr.children[0]);
 	}
 	return nullptr;
 }

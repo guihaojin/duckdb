@@ -8,6 +8,7 @@
 #include "duckdb/common/chrono.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/multiply.hpp"
+#include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/common/limits.hpp"
 #include <ctime>
 
@@ -20,11 +21,45 @@ static_assert(sizeof(timestamp_t) == sizeof(int64_t), "timestamp_t was padded");
 // T may be a space
 // Z is optional
 // ISO 8601
-bool Timestamp::TryConvertTimestamp(const char *str, idx_t len, timestamp_t &result) {
+
+// arithmetic operators
+timestamp_t timestamp_t::operator+(const double &value) const {
+	timestamp_t result;
+	if (!TryAddOperator::Operation(this->value, int64_t(value), result.value)) {
+		throw OutOfRangeException("Overflow in timestamp addition");
+	}
+	return result;
+}
+
+int64_t timestamp_t::operator-(const timestamp_t &other) const {
+	int64_t result;
+	if (!TrySubtractOperator::Operation(value, int64_t(other.value), result)) {
+		throw OutOfRangeException("Overflow in timestamp subtraction");
+	}
+	return result;
+}
+
+// in-place operators
+timestamp_t &timestamp_t::operator+=(const int64_t &delta) {
+	if (!TryAddOperator::Operation(value, delta, value)) {
+		throw OutOfRangeException("Overflow in timestamp increment");
+	}
+	return *this;
+}
+
+timestamp_t &timestamp_t::operator-=(const int64_t &delta) {
+	if (!TrySubtractOperator::Operation(value, delta, value)) {
+		throw OutOfRangeException("Overflow in timestamp decrement");
+	}
+	return *this;
+}
+
+bool Timestamp::TryConvertTimestampTZ(const char *str, idx_t len, timestamp_t &result, bool &has_offset, string_t &tz) {
 	idx_t pos;
 	date_t date;
 	dtime_t time;
-	if (!Date::TryConvertDate(str, len, pos, date)) {
+	has_offset = false;
+	if (!Date::TryConvertDate(str, len, pos, date, has_offset)) {
 		return false;
 	}
 	if (pos == len) {
@@ -52,12 +87,30 @@ bool Timestamp::TryConvertTimestamp(const char *str, idx_t len, timestamp_t &res
 	}
 	if (pos < len) {
 		// skip a "Z" at the end (as per the ISO8601 specs)
+		int hour_offset, minute_offset;
 		if (str[pos] == 'Z') {
 			pos++;
-		}
-		int hour_offset, minute_offset;
-		if (Timestamp::TryParseUTCOffset(str, pos, len, hour_offset, minute_offset)) {
-			result -= hour_offset * Interval::MICROS_PER_HOUR + minute_offset * Interval::MICROS_PER_MINUTE;
+			has_offset = true;
+		} else if (Timestamp::TryParseUTCOffset(str, pos, len, hour_offset, minute_offset)) {
+			const int64_t delta = hour_offset * Interval::MICROS_PER_HOUR + minute_offset * Interval::MICROS_PER_MINUTE;
+			if (!TrySubtractOperator::Operation(result.value, delta, result.value)) {
+				return false;
+			}
+			has_offset = true;
+		} else {
+			// Parse a time zone: / [A-Za-z0-9/_]+/
+			if (str[pos++] != ' ') {
+				return false;
+			}
+			auto tz_name = str + pos;
+			for (; pos < len && CharacterIsTimeZone(str[pos]); ++pos) {
+				continue;
+			}
+			auto tz_len = str + pos - tz_name;
+			if (tz_len) {
+				tz = string_t(tz_name, tz_len);
+			}
+			// Note that the caller must reinterpret the instant we return to the given time zone
 		}
 
 		// skip any spaces at the end
@@ -71,9 +124,38 @@ bool Timestamp::TryConvertTimestamp(const char *str, idx_t len, timestamp_t &res
 	return true;
 }
 
+TimestampCastResult Timestamp::TryConvertTimestamp(const char *str, idx_t len, timestamp_t &result) {
+	string_t tz(nullptr, 0);
+	bool has_offset = false;
+	// We don't understand TZ without an extension, so fail if one was provided.
+	auto success = TryConvertTimestampTZ(str, len, result, has_offset, tz);
+	if (!success) {
+		return TimestampCastResult::ERROR_INCORRECT_FORMAT;
+	}
+	if (tz.GetSize() == 0) {
+		// no timezone provided - success!
+		return TimestampCastResult::SUCCESS;
+	}
+	if (tz.GetSize() == 3) {
+		// we can ONLY handle UTC without ICU being loaded
+		auto tz_ptr = tz.GetData();
+		if ((tz_ptr[0] == 'u' || tz_ptr[0] == 'U') && (tz_ptr[1] == 't' || tz_ptr[1] == 'T') &&
+		    (tz_ptr[2] == 'c' || tz_ptr[2] == 'C')) {
+			return TimestampCastResult::SUCCESS;
+		}
+	}
+	return TimestampCastResult::ERROR_NON_UTC_TIMEZONE;
+}
+
 string Timestamp::ConversionError(const string &str) {
 	return StringUtil::Format("timestamp field value out of range: \"%s\", "
-	                          "expected format is (YYYY-MM-DD HH:MM:SS[.MS])",
+	                          "expected format is (YYYY-MM-DD HH:MM:SS[.US][±HH:MM| ZONE])",
+	                          str);
+}
+
+string Timestamp::UnsupportedTimezoneError(const string &str) {
+	return StringUtil::Format("timestamp field value \"%s\" has a timestamp that is not UTC.\nUse the TIMESTAMPTZ type "
+	                          "with the ICU extension loaded to handle non-UTC timestamps.",
 	                          str);
 }
 
@@ -81,12 +163,21 @@ string Timestamp::ConversionError(string_t str) {
 	return Timestamp::ConversionError(str.GetString());
 }
 
+string Timestamp::UnsupportedTimezoneError(string_t str) {
+	return Timestamp::UnsupportedTimezoneError(str.GetString());
+}
+
 timestamp_t Timestamp::FromCString(const char *str, idx_t len) {
 	timestamp_t result;
-	if (!Timestamp::TryConvertTimestamp(str, len, result)) {
+	auto cast_result = Timestamp::TryConvertTimestamp(str, len, result);
+	if (cast_result == TimestampCastResult::SUCCESS) {
+		return result;
+	}
+	if (cast_result == TimestampCastResult::ERROR_NON_UTC_TIMEZONE) {
+		throw ConversionException(Timestamp::UnsupportedTimezoneError(string(str, len)));
+	} else {
 		throw ConversionException(Timestamp::ConversionError(string(str, len)));
 	}
-	return result;
 }
 
 bool Timestamp::TryParseUTCOffset(const char *str, idx_t &pos, idx_t len, int &hour_offset, int &minute_offset) {
@@ -247,6 +338,13 @@ int64_t Timestamp::GetEpochNanoSeconds(timestamp_t timestamp) {
 	if (!TryMultiplyOperator::Operation(timestamp.value, ns_in_us, result)) {
 		throw ConversionException("Could not convert Timestamp(US) to Timestamp(NS)");
 	}
+	return result;
+}
+
+double Timestamp::GetJulianDay(timestamp_t timestamp) {
+	double result = Timestamp::GetTime(timestamp).micros;
+	result /= Interval::MICROS_PER_DAY;
+	result += Date::ExtractJulianDay(Timestamp::GetDate(timestamp));
 	return result;
 }
 

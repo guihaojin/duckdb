@@ -4,6 +4,10 @@
 
 require icu
 
+# Normalise the testing locale
+statement ok
+SET Calendar = 'gregorian';
+
 statement ok
 SET TimeZone = 'America/Los_Angeles';
 
@@ -14,7 +18,7 @@ statement ok
 CREATE TABLE datetime1 AS
 SELECT '2005-12-31 23:59:59.9999999-08'::TIMESTAMPTZ AS startdate, '2006-01-01 00:00:00.0000000-08'::TIMESTAMPTZ AS enddate;
 
-foreach datepart year quarter month day dayofyear hour minute second millisecond microsecond
+foreach datepart year quarter month day dayofyear hour minute second millisecond microsecond julian
 
 query I
 SELECT DATEDIFF('${datepart}', startdate, enddate) FROM datetime1
@@ -41,7 +45,7 @@ SELECT DATEDIFF('isoyear', '2022-01-01 00:00:00-08'::TIMESTAMPTZ, '2022-01-03 00
 #
 # Infinities
 #
-foreach specifier year isoyear month day decade century millennium quarter week microseconds milliseconds second minute hour
+foreach specifier year isoyear month day decade century millennium quarter week microseconds milliseconds second minute hour julian
 
 foreach lspecial infinity -infinity 2004-01-31T12:00:00.000050-08
 
@@ -64,7 +68,7 @@ endloop
 endloop
 
 # Negation
-foreach datepart year quarter month day dayofyear hour minute second millisecond microsecond decade century millennium week yearweek isoyear
+foreach datepart year quarter month day dayofyear hour minute second millisecond microsecond decade century millennium week yearweek isoyear julian
 
 query I
 SELECT DATEDIFF('${datepart}', startdate, enddate) + DATEDIFF('${datepart}', enddate, startdate) FROM datetime1
@@ -87,3 +91,29 @@ FROM (SELECT '2021-07-30'::TIMESTAMP + INTERVAL (d) DAY AS startdate FROM range(
 1
 
 endloop
+
+# Week starts on Monday for ICU
+query III
+SELECT *, DATE_DIFF('week', lo, hi)
+FROM (
+	SELECT (d - INTERVAL 9 HOUR)::TIMESTAMPTZ AS lo, (d + INTERVAL 7 HOUR)::TIMESTAMPTZ AS hi
+	FROM generate_series('2022-09-01'::DATE, '2022-09-12'::DATE, INTERVAL 1 DAY) tbl(d)
+);
+----
+2022-08-31 15:00:00-07	2022-09-01 07:00:00-07	0
+2022-09-01 15:00:00-07	2022-09-02 07:00:00-07	0
+2022-09-02 15:00:00-07	2022-09-03 07:00:00-07	0
+2022-09-03 15:00:00-07	2022-09-04 07:00:00-07	0
+2022-09-04 15:00:00-07	2022-09-05 07:00:00-07	1
+2022-09-05 15:00:00-07	2022-09-06 07:00:00-07	0
+2022-09-06 15:00:00-07	2022-09-07 07:00:00-07	0
+2022-09-07 15:00:00-07	2022-09-08 07:00:00-07	0
+2022-09-08 15:00:00-07	2022-09-09 07:00:00-07	0
+2022-09-09 15:00:00-07	2022-09-10 07:00:00-07	0
+2022-09-10 15:00:00-07	2022-09-11 07:00:00-07	0
+2022-09-11 15:00:00-07	2022-09-12 07:00:00-07	1
+
+query I
+SELECT date_diff('week', '2015-10-06 04:22:11'::timestamptz, '2016-11-25 23:19:37'::timestamptz);
+----
+59

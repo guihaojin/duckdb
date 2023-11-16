@@ -12,7 +12,7 @@ end
 =#
 """
 	duckdb_open(path, out_database)
-Creates a new database or opens an existing database file stored at the the given path.
+Creates a new database or opens an existing database file stored at the given path.
 If no path is given a new in-memory database is created instead.
 * `path`: Path to the database file on disk, or `nullptr` or `:memory:` to open an in-memory database.
 * `out_database`: The result database object.
@@ -22,7 +22,7 @@ function duckdb_open(path, out_database)
     return ccall((:duckdb_open, libduckdb), duckdb_state, (Ptr{UInt8}, Ref{duckdb_database}), path, out_database)
 end
 """
-	Extended version of duckdb_open. Creates a new database or opens an existing database file stored at the the given path.
+	Extended version of duckdb_open. Creates a new database or opens an existing database file stored at the given path.
 
     * path: Path to the database file on disk, or `nullptr` or `:memory:` to open an in-memory database.
     * out_database: The result database object.
@@ -360,6 +360,39 @@ function duckdb_result_get_chunk(result, chunk_index)
 end
 
 """
+ Checks if the type of the internal result is StreamQueryResult.
+
+ * result: The result object to check.
+ * returns: Whether or not the result object is of the type StreamQueryResult
+"""
+function duckdb_result_is_streaming(result)
+    return ccall((:duckdb_result_is_streaming, libduckdb), Bool, (duckdb_result,), result)
+end
+
+"""
+ Fetches a data chunk from the (streaming) duckdb_result. This function should be called repeatedly until the result is
+ exhausted.
+
+ The result must be destroyed with `duckdb_destroy_data_chunk`.
+
+ This function can only be used on duckdb_results created with 'duckdb_pending_prepared_streaming'
+
+ If this function is used, none of the other result functions can be used and vice versa (i.e. this function cannot be
+ mixed with the legacy result functions or the materialized result functions).
+
+ It is not known beforehand how many chunks will be returned by this result.
+
+ * result: The result object to fetch the data chunk from.
+ * returns: The resulting data chunk. Returns `NULL` if the result has an error.
+"""
+function duckdb_stream_fetch_chunk(result)
+    return ccall((:duckdb_stream_fetch_chunk, libduckdb), duckdb_data_chunk, (duckdb_result,), result)
+end
+
+
+
+
+"""
 Returns the number of data chunks present in the result.
 
 * result: The result object
@@ -654,7 +687,7 @@ Free a value returned from `duckdb_malloc`, `duckdb_value_varchar` or `duckdb_va
 DUCKDB_API void duckdb_free(void *ptr);
 """
 function duckdb_free(ptr)
-    return ccall((:duckdb_malloc, libduckdb), Cvoid, (Ptr{Cvoid},), ptr)
+    return ccall((:duckdb_free, libduckdb), Cvoid, (Ptr{Cvoid},), ptr)
 end
 
 """
@@ -935,7 +968,7 @@ function duckdb_bind_int64(prepared_statement, param_idx, val)
 end
 
 """
-Binds an duckdb_hugeint value to the prepared statement at the specified index.
+Binds a duckdb_hugeint value to the prepared statement at the specified index.
 */
 DUCKDB_API duckdb_state duckdb_bind_hugeint(duckdb_prepared_statement prepared_statement, idx_t param_idx,
                                             duckdb_hugeint val);
@@ -1012,7 +1045,7 @@ function duckdb_bind_uint64(prepared_statement, param_idx, val)
 end
 
 """
-Binds an float value to the prepared statement at the specified index.
+Binds a float value to the prepared statement at the specified index.
 DUCKDB_API duckdb_state duckdb_bind_float(duckdb_prepared_statement prepared_statement, idx_t param_idx, float val);
 """
 function duckdb_bind_float(prepared_statement, param_idx, val)
@@ -1027,7 +1060,7 @@ function duckdb_bind_float(prepared_statement, param_idx, val)
 end
 
 """
-Binds an double value to the prepared statement at the specified index.
+Binds a double value to the prepared statement at the specified index.
 DUCKDB_API duckdb_state duckdb_bind_double(duckdb_prepared_statement prepared_statement, idx_t param_idx, double val);
 """
 function duckdb_bind_double(prepared_statement, param_idx, val)
@@ -1207,6 +1240,127 @@ end
 #     )
 # end
 
+#=
+//===--------------------------------------------------------------------===//
+// Pending Result Interface
+//===--------------------------------------------------------------------===//
+=#
+"""
+Executes the prepared statement with the given bound parameters, and returns a pending result.
+The pending result represents an intermediate structure for a query that is not yet fully executed.
+The pending result can be used to incrementally execute a query, returning control to the client between tasks.
+
+Note that after calling `duckdb_pending_prepared`, the pending result should always be destroyed using
+`duckdb_destroy_pending`, even if this function returns DuckDBError.
+
+* prepared_statement: The prepared statement to execute.
+* out_result: The pending query result.
+* returns: `DuckDBSuccess` on success or `DuckDBError` on failure.
+"""
+function duckdb_pending_prepared(prepared_statement, out_pending)
+    return ccall(
+        (:duckdb_pending_prepared, libduckdb),
+        duckdb_state,
+        (duckdb_prepared_statement, Ref{duckdb_pending_result}),
+        prepared_statement,
+        out_pending
+    )
+end
+
+"""
+Executes the prepared statement with the given bound parameters, and returns a pending result.
+This pending result will create a streaming duckdb_result when executed.
+The pending result represents an intermediate structure for a query that is not yet fully executed.
+
+Note that after calling `duckdb_pending_prepared_streaming`, the pending result should always be destroyed using
+`duckdb_destroy_pending`, even if this function returns DuckDBError.
+
+* prepared_statement: The prepared statement to execute.
+* out_result: The pending query result.
+* returns: `DuckDBSuccess` on success or `DuckDBError` on failure.
+"""
+function duckdb_pending_prepared_streaming(prepared_statement, out_pending)
+    return ccall(
+        (:duckdb_pending_prepared_streaming, libduckdb),
+        duckdb_state,
+        (duckdb_prepared_statement, Ref{duckdb_pending_result}),
+        prepared_statement,
+        out_pending
+    )
+end
+
+"""
+Closes the pending result and de-allocates all memory allocated for the result.
+
+* pending_result: The pending result to destroy.
+"""
+function duckdb_destroy_pending(pending_result)
+    return ccall((:duckdb_destroy_pending, libduckdb), Cvoid, (Ref{duckdb_pending_result},), pending_result)
+end
+
+"""
+Returns the error message contained within the pending result.
+
+The result of this function must not be freed. It will be cleaned up when `duckdb_destroy_pending` is called.
+
+* result: The pending result to fetch the error from.
+* returns: The error of the pending result.
+"""
+function duckdb_pending_error(pending_result)
+    return ccall((:duckdb_pending_error, libduckdb), Ptr{UInt8}, (duckdb_pending_result,), pending_result)
+end
+
+"""
+Executes a single task within the query, returning whether or not the query is ready.
+
+If this returns DUCKDB_PENDING_RESULT_READY, the duckdb_execute_pending function can be called to obtain the result.
+If this returns DUCKDB_PENDING_RESULT_NOT_READY, the duckdb_pending_execute_task function should be called again.
+If this returns DUCKDB_PENDING_ERROR, an error occurred during execution.
+
+The error message can be obtained by calling duckdb_pending_error on the pending_result.
+
+* pending_result: The pending result to execute a task within.
+* returns: The state of the pending result after the execution.
+"""
+function duckdb_pending_execute_task(pending_result)
+    return ccall(
+        (:duckdb_pending_execute_task, libduckdb),
+        duckdb_pending_state,
+        (duckdb_pending_result,),
+        pending_result
+    )
+end
+
+"""
+Fully execute a pending query result, returning the final query result.
+
+If duckdb_pending_execute_task has been called until DUCKDB_PENDING_RESULT_READY was returned, this will return fast.
+Otherwise, all remaining tasks must be executed first.
+
+* pending_result: The pending result to execute.
+* out_result: The result object.
+* returns: `DuckDBSuccess` on success or `DuckDBError` on failure.
+"""
+function duckdb_execute_pending(pending_result, out_result)
+    return ccall(
+        (:duckdb_execute_pending, libduckdb),
+        duckdb_state,
+        (duckdb_pending_result, Ref{duckdb_result}),
+        pending_result,
+        out_result
+    )
+end
+
+"""
+Returns whether a duckdb_pending_state is finished executing. For example if `pending_state` is
+DUCKDB_PENDING_RESULT_READY, this function will return true.
+
+* pending_state: The pending state on which to decide whether to finish execution.
+* returns: Boolean indicating pending execution should be considered finished.
+"""
+function duckdb_pending_execution_is_finished(pending_state)
+    return ccall((:duckdb_execute_pending, libduckdb), Bool, (duckdb_pending_state,), pending_state)
+end
 
 #=
 //===--------------------------------------------------------------------===//
@@ -1408,6 +1562,16 @@ function duckdb_struct_type_child_count(handle)
 end
 
 """
+Returns the number of members of a union type.
+
+* type: The logical type object
+* returns: The number of members of a union type.
+"""
+function duckdb_union_type_member_count(handle)
+    return ccall((:duckdb_union_type_member_count, libduckdb), UInt64, (duckdb_logical_type,), handle)
+end
+
+"""
 Retrieves the name of the struct child.
 
 The result must be freed with `duckdb_free`
@@ -1427,6 +1591,25 @@ function duckdb_struct_type_child_name(handle, index)
 end
 
 """
+Retrieves the name of the union member.
+
+The result must be freed with `duckdb_free`
+
+* type: The logical type object
+* index: The member index
+* returns: The name of the union member. Must be freed with `duckdb_free`.
+"""
+function duckdb_union_type_member_name(handle, index)
+    return ccall(
+        (:duckdb_union_type_member_name, libduckdb),
+        Ptr{UInt8},
+        (duckdb_logical_type, UInt64),
+        handle,
+        index - 1
+    )
+end
+
+"""
 Retrieves the child type of the given struct type at the specified index.
 
 The result must be freed with `duckdb_destroy_logical_type`
@@ -1438,6 +1621,25 @@ The result must be freed with `duckdb_destroy_logical_type`
 function duckdb_struct_type_child_type(handle, index)
     return ccall(
         (:duckdb_struct_type_child_type, libduckdb),
+        duckdb_logical_type,
+        (duckdb_logical_type, UInt64),
+        handle,
+        index - 1
+    )
+end
+
+"""
+Retrieves the member type of the given union type at the specified index.
+
+The result must be freed with `duckdb_destroy_logical_type`
+
+* type: The logical type object
+* index: The member index
+* returns: The member type of the union type. Must be destroyed with `duckdb_destroy_logical_type`.
+"""
+function duckdb_union_type_member_type(handle, index)
+    return ccall(
+        (:duckdb_union_type_member_type, libduckdb),
         duckdb_logical_type,
         (duckdb_logical_type, UInt64),
         handle,
@@ -1648,6 +1850,25 @@ function duckdb_struct_vector_get_child(vector, index)
         (duckdb_vector, UInt64),
         vector,
         index - 1
+    )
+end
+
+"""
+Retrieves the member vector of a union vector.
+
+The resulting vector is valid as long as the parent vector is valid.
+
+* vector: The vector
+* index: The member index
+* returns: The member vector
+"""
+function duckdb_union_vector_get_member(vector, index)
+    return ccall(
+        (:duckdb_struct_vector_get_child, libduckdb),
+        duckdb_vector,
+        (duckdb_vector, UInt64),
+        vector,
+        1 + (index - 1)
     )
 end
 
@@ -1941,6 +2162,23 @@ function duckdb_bind_set_bind_data(bind_info, bind_data, delete_callback)
 end
 
 """
+Sets the cardinality estimate for the table function, used for optimization.
+
+* info: The bind data object.
+* is_exact: Whether or not the cardinality estimate is exact, or an approximation
+"""
+function duckdb_bind_set_cardinality(bind_info, cardinality, is_exact)
+    return ccall(
+        (:duckdb_bind_set_cardinality, libduckdb),
+        Cvoid,
+        (duckdb_bind_info, UInt64, Bool),
+        bind_info,
+        cardinality,
+        is_exact
+    )
+end
+
+"""
 Report that an error has occurred during bind.
 
 * info: The info object
@@ -2162,6 +2400,22 @@ function duckdb_replacement_scan_add_parameter(info, parameter)
         (duckdb_replacement_scan_info, duckdb_value),
         info,
         parameter
+    )
+end
+
+"""
+Report that an error has occurred while executing the replacement scan.
+
+* info: The info object
+* error: The error message
+"""
+function duckdb_replacement_scan_set_error(info, error_message)
+    return ccall(
+        (:duckdb_replacement_scan_set_error, libduckdb),
+        Cvoid,
+        (duckdb_replacement_scan_info, Ptr{UInt8}),
+        info,
+        error_message
     )
 end
 
@@ -2555,50 +2809,95 @@ end
 // Threading Interface
 //===--------------------------------------------------------------------===//
 =#
-# Execute DuckDB tasks on this thread.
-#
-# Will return after `max_tasks` have been executed, or if there are no more tasks present.
-#
-# * database: The database object to execute tasks for
-# * max_tasks: The maximum amount of tasks to execute
+"""
+Execute DuckDB tasks on this thread.
+
+Will return after `max_tasks` have been executed, or if there are no more tasks present.
+
+* database: The database object to execute tasks for
+* max_tasks: The maximum amount of tasks to execute
+"""
 function duckdb_execute_tasks(handle, max_tasks)
     return ccall((:duckdb_execute_tasks, libduckdb), Cvoid, (duckdb_database, UInt64), handle, max_tasks)
 end
 
-# Creates a task state that can be used with duckdb_execute_tasks_state to execute tasks until
-#  duckdb_finish_execution is called on the state.
-#
-# duckdb_destroy_state should be called on the result in order to free memory.
-#
-# * returns: The task state that can be used with duckdb_execute_tasks_state.
+"""
+Creates a task state that can be used with duckdb_execute_tasks_state to execute tasks until
+ duckdb_finish_execution is called on the state.
+
+duckdb_destroy_state should be called on the result in order to free memory.
+
+* returns: The task state that can be used with duckdb_execute_tasks_state.
+"""
 function duckdb_create_task_state(database)
     return ccall((:duckdb_create_task_state, libduckdb), duckdb_task_state, (duckdb_database,), database)
 end
 
-# Execute DuckDB tasks on this thread.
-#
-# The thread will keep on executing tasks forever, until duckdb_finish_execution is called on the state.
-# Multiple threads can share the same duckdb_task_state.
-#
-# * database: The database object to execute tasks for
-# * state: The task state of the executor
+"""
+Execute DuckDB tasks on this thread.
+
+The thread will keep on executing tasks forever, until duckdb_finish_execution is called on the state.
+Multiple threads can share the same duckdb_task_state.
+
+* database: The database object to execute tasks for
+* state: The task state of the executor
+"""
 function duckdb_execute_tasks_state(state)
     return ccall((:duckdb_execute_tasks_state, libduckdb), Cvoid, (duckdb_task_state,), state)
 end
 
-# Finish execution on a specific task.
-#
-# * state: The task state to finish execution
+"""
+Execute DuckDB tasks on this thread.
+
+The thread will keep on executing tasks until either duckdb_finish_execution is called on the state,
+max_tasks tasks have been executed or there are no more tasks to be executed.
+
+Multiple threads can share the same duckdb_task_state.
+
+* state: The task state of the executor
+* max_tasks: The maximum amount of tasks to execute
+* returns: The amount of tasks that have actually been executed
+"""
+function duckdb_execute_n_tasks_state(state, max_tasks)
+    return ccall((:duckdb_execute_n_tasks_state, libduckdb), UInt64, (duckdb_task_state, UInt64), state, max_tasks)
+end
+
+"""
+Finish execution on a specific task.
+
+* state: The task state to finish execution
+"""
 function duckdb_finish_execution(state)
     return ccall((:duckdb_finish_execution, libduckdb), Cvoid, (duckdb_task_state,), state)
 end
 
-# Destroys the task state returned from duckdb_create_task_state.
-#
-# Note that this should not be called while there is an active duckdb_execute_tasks_state running
-# on the task state.
-#
-# * state: The task state to clean up
+"""
+Check if the provided duckdb_task_state has finished execution
+
+* state: The task state to inspect
+* returns: Whether or not duckdb_finish_execution has been called on the task state
+"""
+function duckdb_task_state_is_finished(state)
+    return ccall((:duckdb_task_state_is_finished, libduckdb), Bool, (duckdb_task_state,), state)
+end
+
+"""
+Destroys the task state returned from duckdb_create_task_state.
+
+Note that this should not be called while there is an active duckdb_execute_tasks_state running
+on the task state.
+
+* state: The task state to clean up
+"""
 function duckdb_destroy_task_state(state)
     return ccall((:duckdb_destroy_task_state, libduckdb), Cvoid, (duckdb_task_state,), state)
+end
+
+"""
+Returns true if execution of the current query is finished.
+
+* con: The connection on which to check
+"""
+function duckdb_execution_is_finished(con)
+    return ccall((:duckdb_execution_is_finished, libduckdb), Bool, (duckdb_connection,), con)
 end

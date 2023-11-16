@@ -4,3 +4,7 @@ deadlock:Checkpoint
 race:NextInnerJoin
 race:~ColumnSegment
 race:duckdb_moodycamel
+race:duckdb_jemalloc
+race:AddToEvictionQueue
+race:CanHaveNull
+race:CanHaveNoNull

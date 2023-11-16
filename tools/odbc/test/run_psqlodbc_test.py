@@ -4,27 +4,72 @@ import platform
 import shutil
 import sys
 
-so_suffix = '.dylib' if platform.system()=='Darwin' else '.so'
+so_suffix = '.dylib' if platform.system() == 'Darwin' else '.so'
 
 parser = argparse.ArgumentParser(description='Run the psqlodbc program.')
-parser.add_argument('--build_psqlodbc', dest='build_psqlodbc',
-                     action='store_const', const=True, help='clone and build psqlodbc')
-parser.add_argument('--psqlodbc', dest='psqlodbcdir',
-                     default=os.path.join(os.getcwd(), 'psqlodbc'), help='path of the psqlodbc directory')
-parser.add_argument('--odbc_lib', dest='odbclib',
-                     default=None, help='path of the odbc .so or .dylib file')
-parser.add_argument('--release', dest='release', action='store_const', const=True, help='Specify to use release mode instead of debug mode')
-parser.add_argument('--overwrite', dest='overwrite', action='store_const', const=True, help='Whether or not to overwrite the ~/.odbc.ini and ~/.odbcinst.ini files')
-parser.add_argument('--fix', dest='fix', action='store_const', const=True, help='Whether or not to fix tests, or whether to just run them')
+parser.add_argument(
+    '--build_psqlodbc', dest='build_psqlodbc', action='store_const', const=True, help='clone and build psqlodbc'
+)
+parser.add_argument(
+    '--psqlodbc',
+    dest='psqlodbcdir',
+    default=os.path.join(os.getcwd(), 'psqlodbc'),
+    help='path of the psqlodbc directory',
+)
+parser.add_argument('--odbc_lib', dest='odbclib', default=None, help='path of the odbc .so or .dylib file')
+parser.add_argument(
+    '--release',
+    dest='release',
+    action='store_const',
+    const=True,
+    help='Specify to use release mode instead of debug mode',
+)
+parser.add_argument(
+    '--overwrite',
+    dest='overwrite',
+    action='store_const',
+    const=True,
+    help='Whether or not to overwrite the ~/.odbc.ini and ~/.odbcinst.ini files',
+)
+parser.add_argument(
+    '--fix',
+    dest='fix',
+    action='store_const',
+    const=True,
+    help='Whether or not to fix tests, or whether to just run them',
+)
 parser.add_argument('--test', dest='test', default=None, help='A specific test to run (if any)')
 parser.add_argument('--trace_file', dest='tracefile', default='/tmp/odbctrace', help='Path to tracefile of ODBC script')
 parser.add_argument('--duckdb_dir', dest='duckdbdir', default=os.getcwd(), help='Path to DuckDB directory')
 parser.add_argument('--no-trace', dest='notrace', action='store_const', const=True, help='Do not print trace')
 parser.add_argument('--no-exit', dest='noexit', action='store_const', const=True, help='Do not exit on test failure')
-parser.add_argument('--debugger', dest='debugger', default=None, choices=['lldb', 'gdb'], help='Debugger to attach (if any). If set, will set up the environment and give you a command to run with the debugger.')
-
+parser.add_argument(
+    '--debugger',
+    dest='debugger',
+    default=None,
+    choices=['lldb', 'gdb'],
+    help='Debugger to attach (if any). If set, will set up the environment and give you a command to run with the debugger.',
+)
 
 args = parser.parse_args()
+
+build_config = 'debug'
+if args.release is not None:
+    build_config = 'release'
+
+odbc_build_dir = os.path.join(args.psqlodbcdir, 'build', build_config)
+odbc_reset = os.path.join(odbc_build_dir, 'reset-db')
+odbc_test = os.path.join(odbc_build_dir, 'psql_odbc_test')
+
+
+def reset_db():
+    try_remove(args.tracefile)
+    try_remove(os.path.join(args.psqlodbcdir, 'contrib_regression'))
+    try_remove(os.path.join(args.psqlodbcdir, 'contrib_regression.wal'))
+
+    command = odbc_reset + f' < {args.psqlodbcdir}/sampletables.sql'
+    syscall(command, 'Failed to reset db')
+
 
 def print_trace_and_exit():
     if args.notrace is None:
@@ -32,6 +77,7 @@ def print_trace_and_exit():
             print(f.read().decode('utf8', 'ignore'))
     if args.noexit is None:
         exit(1)
+
 
 def syscall(arg, error, print_trace=True):
     ret = os.system(arg)
@@ -41,10 +87,6 @@ def syscall(arg, error, print_trace=True):
             print_trace_and_exit()
         exit(1)
 
-
-build_config = 'debug'
-if args.release is not None:
-    build_config = 'release'
 
 if args.build_psqlodbc is not None:
     if not os.path.isdir('psqlodbc'):
@@ -84,27 +126,21 @@ Database=:memory:
     with open(os.path.join(user_dir, '.odbc.ini'), 'w+') as f:
         f.write(odbc_ini)
 
+
 def try_remove(fpath):
     try:
         os.remove(fpath)
     except:
         pass
 
+
 os.chdir(args.psqlodbcdir)
 
 os.environ['PSQLODBC_TEST_DSN'] = 'DuckDB'
 
-try_remove(args.tracefile)
-try_remove(os.path.join(args.psqlodbcdir, 'contrib_regression'))
-try_remove(os.path.join(args.psqlodbcdir, 'contrib_regression.wal'))
+reset_db()
 
-odbc_build_dir = os.path.join(args.psqlodbcdir, 'build', build_config)
-odbc_reset = os.path.join(odbc_build_dir, 'reset-db')
-odbc_test = os.path.join(odbc_build_dir, 'psql_odbc_test')
 test_list_file = os.path.join(args.duckdbdir, 'tools', 'odbc', 'test', 'psql_supported_tests')
-
-syscall(odbc_reset + ' < sampletables.sql', 'Failed to reset db')
-
 test_list = []
 if args.test is None:
     # all tests: read from list
@@ -112,6 +148,8 @@ if args.test is None:
         test_list = [x.strip() for x in f.readlines() if len(x.strip()) > 0]
 else:
     test_list = [args.test]
+
+odbc_test = os.path.join(odbc_build_dir, 'psql_odbc_test')
 
 if args.debugger is not None:
     argstart = '--args'
@@ -127,4 +165,3 @@ for test in test_list:
     fix_suffix = ' --fix' if args.fix is not None else ''
     print(f"Running test {test}")
     syscall(odbc_test + ' ' + test + fix_suffix, f"Failed to run test {test}")
-

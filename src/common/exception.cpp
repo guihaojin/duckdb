@@ -1,21 +1,34 @@
 #include "duckdb/common/exception.hpp"
-
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/to_string.hpp"
 #include "duckdb/common/types.hpp"
 
+#ifdef DUCKDB_CRASH_ON_ASSERT
+#include "duckdb/common/printer.hpp"
+#include <stdio.h>
+#include <stdlib.h>
+#endif
+#ifdef DUCKDB_DEBUG_STACKTRACE
+#include <execinfo.h>
+#endif
+
 namespace duckdb {
 
-Exception::Exception(const string &msg) : std::exception(), type(ExceptionType::INVALID) {
+Exception::Exception(const string &msg) : std::exception(), type(ExceptionType::INVALID), raw_message_(msg) {
 	exception_message_ = msg;
 }
 
-Exception::Exception(ExceptionType exception_type, const string &message) : std::exception(), type(exception_type) {
+Exception::Exception(ExceptionType exception_type, const string &message)
+    : std::exception(), type(exception_type), raw_message_(message) {
 	exception_message_ = ExceptionTypeToString(exception_type) + " Error: " + message;
 }
 
 const char *Exception::what() const noexcept {
 	return exception_message_.c_str();
+}
+
+const string &Exception::RawMessage() const {
+	return raw_message_;
 }
 
 bool Exception::UncaughtException() {
@@ -26,86 +39,176 @@ bool Exception::UncaughtException() {
 #endif
 }
 
-string Exception::ConstructMessageRecursive(const string &msg, vector<ExceptionFormatValue> &values) {
+string Exception::GetStackTrace(int max_depth) {
+#ifdef DUCKDB_DEBUG_STACKTRACE
+	string result;
+	auto callstack = unique_ptr<void *[]>(new void *[max_depth]);
+	int frames = backtrace(callstack.get(), max_depth);
+	char **strs = backtrace_symbols(callstack.get(), frames);
+	for (int i = 0; i < frames; i++) {
+		result += strs[i];
+		result += "\n";
+	}
+	free(strs);
+	return "\n" + result;
+#else
+	// Stack trace not available. Toggle DUCKDB_DEBUG_STACKTRACE in exception.cpp to enable stack traces.
+	return "";
+#endif
+}
+
+string Exception::ConstructMessageRecursive(const string &msg, std::vector<ExceptionFormatValue> &values) {
+#ifdef DEBUG
+	// Verify that we have the required amount of values for the message
+	idx_t parameter_count = 0;
+	for (idx_t i = 0; i + 1 < msg.size(); i++) {
+		if (msg[i] != '%') {
+			continue;
+		}
+		if (msg[i + 1] == '%') {
+			i++;
+			continue;
+		}
+		parameter_count++;
+	}
+	if (parameter_count != values.size()) {
+		throw InternalException("Primary exception: %s\nSecondary exception in ConstructMessageRecursive: Expected %d "
+		                        "parameters, received %d",
+		                        msg.c_str(), parameter_count, values.size());
+	}
+
+#endif
 	return ExceptionFormatValue::Format(msg, values);
 }
 
+struct ExceptionEntry {
+	ExceptionType type;
+	char text[48];
+};
+
+static constexpr ExceptionEntry EXCEPTION_MAP[] = {{ExceptionType::INVALID, "Invalid"},
+                                                   {ExceptionType::OUT_OF_RANGE, "Out of Range"},
+                                                   {ExceptionType::CONVERSION, "Conversion"},
+                                                   {ExceptionType::UNKNOWN_TYPE, "Unknown Type"},
+                                                   {ExceptionType::DECIMAL, "Decimal"},
+                                                   {ExceptionType::MISMATCH_TYPE, "Mismatch Type"},
+                                                   {ExceptionType::DIVIDE_BY_ZERO, "Divide by Zero"},
+                                                   {ExceptionType::OBJECT_SIZE, "Object Size"},
+                                                   {ExceptionType::INVALID_TYPE, "Invalid type"},
+                                                   {ExceptionType::SERIALIZATION, "Serialization"},
+                                                   {ExceptionType::TRANSACTION, "TransactionContext"},
+                                                   {ExceptionType::NOT_IMPLEMENTED, "Not implemented"},
+                                                   {ExceptionType::EXPRESSION, "Expression"},
+                                                   {ExceptionType::CATALOG, "Catalog"},
+                                                   {ExceptionType::PARSER, "Parser"},
+                                                   {ExceptionType::BINDER, "Binder"},
+                                                   {ExceptionType::PLANNER, "Planner"},
+                                                   {ExceptionType::SCHEDULER, "Scheduler"},
+                                                   {ExceptionType::EXECUTOR, "Executor"},
+                                                   {ExceptionType::CONSTRAINT, "Constraint"},
+                                                   {ExceptionType::INDEX, "Index"},
+                                                   {ExceptionType::STAT, "Stat"},
+                                                   {ExceptionType::CONNECTION, "Connection"},
+                                                   {ExceptionType::SYNTAX, "Syntax"},
+                                                   {ExceptionType::SETTINGS, "Settings"},
+                                                   {ExceptionType::OPTIMIZER, "Optimizer"},
+                                                   {ExceptionType::NULL_POINTER, "NullPointer"},
+                                                   {ExceptionType::IO, "IO"},
+                                                   {ExceptionType::INTERRUPT, "INTERRUPT"},
+                                                   {ExceptionType::FATAL, "FATAL"},
+                                                   {ExceptionType::INTERNAL, "INTERNAL"},
+                                                   {ExceptionType::INVALID_INPUT, "Invalid Input"},
+                                                   {ExceptionType::OUT_OF_MEMORY, "Out of Memory"},
+                                                   {ExceptionType::PERMISSION, "Permission"},
+                                                   {ExceptionType::PARAMETER_NOT_RESOLVED, "Parameter Not Resolved"},
+                                                   {ExceptionType::PARAMETER_NOT_ALLOWED, "Parameter Not Allowed"},
+                                                   {ExceptionType::DEPENDENCY, "Dependency"},
+                                                   {ExceptionType::MISSING_EXTENSION, "Missing Extension"},
+                                                   {ExceptionType::HTTP, "HTTP"},
+                                                   {ExceptionType::AUTOLOAD, "Extension Autoloading"}};
+
 string Exception::ExceptionTypeToString(ExceptionType type) {
+	for (auto &e : EXCEPTION_MAP) {
+		if (e.type == type) {
+			return e.text;
+		}
+	}
+	return "Unknown";
+}
+
+ExceptionType Exception::StringToExceptionType(const string &type) {
+	for (auto &e : EXCEPTION_MAP) {
+		if (e.text == type) {
+			return e.type;
+		}
+	}
+	return ExceptionType::INVALID;
+}
+
+const HTTPException &Exception::AsHTTPException() const {
+	D_ASSERT(type == ExceptionType::HTTP);
+	const auto &e = static_cast<const HTTPException *>(this);
+	D_ASSERT(e->GetStatusCode() != 0);
+	D_ASSERT(e->GetHeaders().size() > 0);
+	return *e;
+}
+
+void Exception::ThrowAsTypeWithMessage(ExceptionType type, const string &message,
+                                       const std::shared_ptr<Exception> &original) {
 	switch (type) {
-	case ExceptionType::INVALID:
-		return "Invalid";
 	case ExceptionType::OUT_OF_RANGE:
-		return "Out of Range";
+		throw OutOfRangeException(message);
 	case ExceptionType::CONVERSION:
-		return "Conversion";
-	case ExceptionType::UNKNOWN_TYPE:
-		return "Unknown Type";
-	case ExceptionType::DECIMAL:
-		return "Decimal";
-	case ExceptionType::MISMATCH_TYPE:
-		return "Mismatch Type";
-	case ExceptionType::DIVIDE_BY_ZERO:
-		return "Divide by Zero";
-	case ExceptionType::OBJECT_SIZE:
-		return "Object Size";
+		throw ConversionException(message); // FIXME: make a separation between Conversion/Cast exception?
 	case ExceptionType::INVALID_TYPE:
-		return "Invalid type";
-	case ExceptionType::SERIALIZATION:
-		return "Serialization";
+		throw InvalidTypeException(message);
+	case ExceptionType::MISMATCH_TYPE:
+		throw TypeMismatchException(message);
 	case ExceptionType::TRANSACTION:
-		return "TransactionContext";
+		throw TransactionException(message);
 	case ExceptionType::NOT_IMPLEMENTED:
-		return "Not implemented";
-	case ExceptionType::EXPRESSION:
-		return "Expression";
+		throw NotImplementedException(message);
 	case ExceptionType::CATALOG:
-		return "Catalog";
-	case ExceptionType::PARSER:
-		return "Parser";
-	case ExceptionType::BINDER:
-		return "Binder";
-	case ExceptionType::PLANNER:
-		return "Planner";
-	case ExceptionType::SCHEDULER:
-		return "Scheduler";
-	case ExceptionType::EXECUTOR:
-		return "Executor";
-	case ExceptionType::CONSTRAINT:
-		return "Constraint";
-	case ExceptionType::INDEX:
-		return "Index";
-	case ExceptionType::STAT:
-		return "Stat";
+		throw CatalogException(message);
 	case ExceptionType::CONNECTION:
-		return "Connection";
-	case ExceptionType::SYNTAX:
-		return "Syntax";
-	case ExceptionType::SETTINGS:
-		return "Settings";
-	case ExceptionType::OPTIMIZER:
-		return "Optimizer";
-	case ExceptionType::NULL_POINTER:
-		return "NullPointer";
-	case ExceptionType::IO:
-		return "IO";
-	case ExceptionType::INTERRUPT:
-		return "INTERRUPT";
-	case ExceptionType::FATAL:
-		return "FATAL";
-	case ExceptionType::INTERNAL:
-		return "INTERNAL";
-	case ExceptionType::INVALID_INPUT:
-		return "Invalid Input";
-	case ExceptionType::OUT_OF_MEMORY:
-		return "Out of Memory";
+		throw ConnectionException(message);
+	case ExceptionType::PARSER:
+		throw ParserException(message);
 	case ExceptionType::PERMISSION:
-		return "Permission";
-	case ExceptionType::PARAMETER_NOT_RESOLVED:
-		return "Parameter Not Resolved";
+		throw PermissionException(message);
+	case ExceptionType::SYNTAX:
+		throw SyntaxException(message);
+	case ExceptionType::CONSTRAINT:
+		throw ConstraintException(message);
+	case ExceptionType::BINDER:
+		throw BinderException(message);
+	case ExceptionType::IO:
+		throw IOException(message);
+	case ExceptionType::SERIALIZATION:
+		throw SerializationException(message);
+	case ExceptionType::INTERRUPT:
+		throw InterruptException();
+	case ExceptionType::INTERNAL:
+		throw InternalException(message);
+	case ExceptionType::INVALID_INPUT:
+		throw InvalidInputException(message);
+	case ExceptionType::OUT_OF_MEMORY:
+		throw OutOfMemoryException(message);
 	case ExceptionType::PARAMETER_NOT_ALLOWED:
-		return "Parameter Not Allowed";
+		throw ParameterNotAllowedException(message);
+	case ExceptionType::PARAMETER_NOT_RESOLVED:
+		throw ParameterNotResolvedException();
+	case ExceptionType::FATAL:
+		throw FatalException(message);
+	case ExceptionType::DEPENDENCY:
+		throw DependencyException(message);
+	case ExceptionType::HTTP: {
+		original->AsHTTPException().Throw();
+	}
+	case ExceptionType::MISSING_EXTENSION:
+		throw MissingExtensionException(message);
 	default:
-		return "Unknown";
+		throw Exception(type, message);
 	}
 }
 
@@ -121,6 +224,9 @@ CastException::CastException(const PhysicalType orig_type, const PhysicalType ne
 CastException::CastException(const LogicalType &orig_type, const LogicalType &new_type)
     : Exception(ExceptionType::CONVERSION,
                 "Type " + orig_type.ToString() + " can't be cast as " + new_type.ToString()) {
+}
+
+CastException::CastException(const string &msg) : Exception(ExceptionType::CONVERSION, msg) {
 }
 
 ValueOutOfRangeException::ValueOutOfRangeException(const int64_t value, const PhysicalType orig_type,
@@ -153,6 +259,9 @@ ValueOutOfRangeException::ValueOutOfRangeException(const PhysicalType var_type, 
                 "The value is too long to fit into type " + TypeIdToString(var_type) + "(" + to_string(length) + ")") {
 }
 
+ValueOutOfRangeException::ValueOutOfRangeException(const string &msg) : Exception(ExceptionType::OUT_OF_RANGE, msg) {
+}
+
 ConversionException::ConversionException(const string &msg) : Exception(ExceptionType::CONVERSION, msg) {
 }
 
@@ -164,6 +273,9 @@ InvalidTypeException::InvalidTypeException(const LogicalType &type, const string
     : Exception(ExceptionType::INVALID_TYPE, "Invalid Type [" + type.ToString() + "]: " + msg) {
 }
 
+InvalidTypeException::InvalidTypeException(const string &msg) : Exception(ExceptionType::INVALID_TYPE, msg) {
+}
+
 TypeMismatchException::TypeMismatchException(const PhysicalType type_1, const PhysicalType type_2, const string &msg)
     : Exception(ExceptionType::MISMATCH_TYPE,
                 "Type " + TypeIdToString(type_1) + " does not match with " + TypeIdToString(type_2) + ". " + msg) {
@@ -172,6 +284,9 @@ TypeMismatchException::TypeMismatchException(const PhysicalType type_1, const Ph
 TypeMismatchException::TypeMismatchException(const LogicalType &type_1, const LogicalType &type_2, const string &msg)
     : Exception(ExceptionType::MISMATCH_TYPE,
                 "Type " + type_1.ToString() + " does not match with " + type_2.ToString() + ". " + msg) {
+}
+
+TypeMismatchException::TypeMismatchException(const string &msg) : Exception(ExceptionType::MISMATCH_TYPE, msg) {
 }
 
 TransactionException::TransactionException(const string &msg) : Exception(ExceptionType::TRANSACTION, msg) {
@@ -186,6 +301,9 @@ OutOfRangeException::OutOfRangeException(const string &msg) : Exception(Exceptio
 CatalogException::CatalogException(const string &msg) : StandardException(ExceptionType::CATALOG, msg) {
 }
 
+ConnectionException::ConnectionException(const string &msg) : StandardException(ExceptionType::CONNECTION, msg) {
+}
+
 ParserException::ParserException(const string &msg) : StandardException(ExceptionType::PARSER, msg) {
 }
 
@@ -198,10 +316,24 @@ SyntaxException::SyntaxException(const string &msg) : Exception(ExceptionType::S
 ConstraintException::ConstraintException(const string &msg) : Exception(ExceptionType::CONSTRAINT, msg) {
 }
 
+DependencyException::DependencyException(const string &msg) : Exception(ExceptionType::DEPENDENCY, msg) {
+}
+
 BinderException::BinderException(const string &msg) : StandardException(ExceptionType::BINDER, msg) {
 }
 
 IOException::IOException(const string &msg) : Exception(ExceptionType::IO, msg) {
+}
+
+MissingExtensionException::MissingExtensionException(const string &msg)
+    : Exception(ExceptionType::MISSING_EXTENSION, msg) {
+}
+
+AutoloadException::AutoloadException(const string &extension_name, Exception &e)
+    : Exception(ExceptionType::AUTOLOAD,
+                "An error occurred while trying to automatically install the required extension '" + extension_name +
+                    "':\n" + e.RawMessage()),
+      wrapped_exception(e) {
 }
 
 SerializationException::SerializationException(const string &msg) : Exception(ExceptionType::SERIALIZATION, msg) {
@@ -217,6 +349,10 @@ FatalException::FatalException(ExceptionType type, const string &msg) : Exceptio
 }
 
 InternalException::InternalException(const string &msg) : FatalException(ExceptionType::INTERNAL, msg) {
+#ifdef DUCKDB_CRASH_ON_ASSERT
+	Printer::Print("ABORT THROWN BY INTERNAL EXCEPTION: " + msg);
+	abort();
+#endif
 }
 
 InvalidInputException::InvalidInputException(const string &msg) : Exception(ExceptionType::INVALID_INPUT, msg) {

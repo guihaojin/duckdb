@@ -16,7 +16,7 @@ static constexpr int CONCURRENT_UPDATE_TOTAL_ACCOUNTS = 10;
 static constexpr int CONCURRENT_UPDATE_MONEY_PER_ACCOUNT = 10;
 
 TEST_CASE("Single thread update", "[interquery][.]") {
-	unique_ptr<MaterializedQueryResult> result;
+	duckdb::unique_ptr<MaterializedQueryResult> result;
 	DuckDB db(nullptr);
 	Connection con(db);
 
@@ -63,7 +63,7 @@ static void read_total_balance(DuckDB *db, bool *read_correct) {
 }
 
 TEST_CASE("Concurrent update", "[interquery][.]") {
-	unique_ptr<MaterializedQueryResult> result;
+	duckdb::unique_ptr<MaterializedQueryResult> result;
 	DuckDB db(nullptr);
 	Connection con(db);
 
@@ -142,29 +142,29 @@ static void write_random_numbers_to_account(DuckDB *db, bool *correct, size_t nr
 	for (size_t i = 0; i < CONCURRENT_UPDATE_TRANSACTION_UPDATE_COUNT; i++) {
 		// just make some changes to the total
 		// the total amount of money after the commit is the same
-		if (!con.Query("BEGIN TRANSACTION")->success) {
+		if (con.Query("BEGIN TRANSACTION")->HasError()) {
 			correct[nr] = false;
 		}
-		if (!con.Query("UPDATE accounts SET money = money + " + to_string(i * 2) + " WHERE id = " + to_string(nr))
-		         ->success) {
+		if (con.Query("UPDATE accounts SET money = money + " + to_string(i * 2) + " WHERE id = " + to_string(nr))
+		        ->HasError()) {
 			correct[nr] = false;
 		}
-		if (!con.Query("UPDATE accounts SET money = money - " + to_string(i) + " WHERE id = " + to_string(nr))
-		         ->success) {
+		if (con.Query("UPDATE accounts SET money = money - " + to_string(i) + " WHERE id = " + to_string(nr))
+		        ->HasError()) {
 			correct[nr] = false;
 		}
-		if (!con.Query("UPDATE accounts SET money = money - " + to_string(i * 2) + " WHERE id = " + to_string(nr))
-		         ->success) {
+		if (con.Query("UPDATE accounts SET money = money - " + to_string(i * 2) + " WHERE id = " + to_string(nr))
+		        ->HasError()) {
 			correct[nr] = false;
 		}
-		if (!con.Query("UPDATE accounts SET money = money + " + to_string(i) + " WHERE id = " + to_string(nr))
-		         ->success) {
+		if (con.Query("UPDATE accounts SET money = money + " + to_string(i) + " WHERE id = " + to_string(nr))
+		        ->HasError()) {
 			correct[nr] = false;
 		}
 		// we test both commit and rollback
 		// the result of both should be the same since the updates have a
 		// net-zero effect
-		if (!con.Query(nr % 2 == 0 ? "COMMIT" : "ROLLBACK")->success) {
+		if (con.Query(nr % 2 == 0 ? "COMMIT" : "ROLLBACK")->HasError()) {
 			correct[nr] = false;
 		}
 	}
@@ -175,7 +175,7 @@ static void write_random_numbers_to_account(DuckDB *db, bool *correct, size_t nr
 }
 
 TEST_CASE("Multiple concurrent updaters", "[interquery][.]") {
-	unique_ptr<MaterializedQueryResult> result;
+	duckdb::unique_ptr<MaterializedQueryResult> result;
 	DuckDB db(nullptr);
 	Connection con(db);
 

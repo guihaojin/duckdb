@@ -17,6 +17,9 @@ namespace duckdb {
 //! Bound equivalent of SetOperationNode
 class BoundSetOperationNode : public BoundQueryNode {
 public:
+	static constexpr const QueryNodeType TYPE = QueryNodeType::SET_OPERATION_NODE;
+
+public:
 	BoundSetOperationNode() : BoundQueryNode(QueryNodeType::SET_OPERATION_NODE) {
 	}
 
@@ -33,6 +36,16 @@ public:
 	shared_ptr<Binder> left_binder;
 	//! The binder used by the right side of the set operation
 	shared_ptr<Binder> right_binder;
+
+	//! Exprs used by the UNION BY NAME opeartons to add a new projection
+	vector<unique_ptr<Expression>> left_reorder_exprs;
+	vector<unique_ptr<Expression>> right_reorder_exprs;
+
+	//! The exprs of the child node may be rearranged(UNION BY NAME),
+	//! this vector records the new index of the expression after rearrangement
+	//! used by GatherAlias(...) function to create new reorder index
+	vector<idx_t> left_reorder_idx;
+	vector<idx_t> right_reorder_idx;
 
 public:
 	idx_t GetRootIndex() override {

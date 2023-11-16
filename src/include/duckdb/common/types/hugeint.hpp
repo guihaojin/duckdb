@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/types.hpp"
+#include "duckdb/common/type_util.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/exception.hpp"
 
@@ -21,13 +22,13 @@ public:
 	static string ToString(hugeint_t input);
 
 	template <class T>
-	static bool TryCast(hugeint_t input, T &result);
+	DUCKDB_API static bool TryCast(hugeint_t input, T &result);
 
 	template <class T>
 	static T Cast(hugeint_t input) {
-		T value;
-		TryCast(input, value);
-		return value;
+		T result = 0;
+		TryCast(input, result);
+		return result;
 	}
 
 	template <class T>
@@ -111,29 +112,29 @@ public:
 };
 
 template <>
-bool Hugeint::TryCast(hugeint_t input, int8_t &result);
+DUCKDB_API bool Hugeint::TryCast(hugeint_t input, int8_t &result);
 template <>
-bool Hugeint::TryCast(hugeint_t input, int16_t &result);
+DUCKDB_API bool Hugeint::TryCast(hugeint_t input, int16_t &result);
 template <>
-bool Hugeint::TryCast(hugeint_t input, int32_t &result);
+DUCKDB_API bool Hugeint::TryCast(hugeint_t input, int32_t &result);
 template <>
-bool Hugeint::TryCast(hugeint_t input, int64_t &result);
+DUCKDB_API bool Hugeint::TryCast(hugeint_t input, int64_t &result);
 template <>
-bool Hugeint::TryCast(hugeint_t input, uint8_t &result);
+DUCKDB_API bool Hugeint::TryCast(hugeint_t input, uint8_t &result);
 template <>
-bool Hugeint::TryCast(hugeint_t input, uint16_t &result);
+DUCKDB_API bool Hugeint::TryCast(hugeint_t input, uint16_t &result);
 template <>
-bool Hugeint::TryCast(hugeint_t input, uint32_t &result);
+DUCKDB_API bool Hugeint::TryCast(hugeint_t input, uint32_t &result);
 template <>
-bool Hugeint::TryCast(hugeint_t input, uint64_t &result);
+DUCKDB_API bool Hugeint::TryCast(hugeint_t input, uint64_t &result);
 template <>
-bool Hugeint::TryCast(hugeint_t input, hugeint_t &result);
+DUCKDB_API bool Hugeint::TryCast(hugeint_t input, hugeint_t &result);
 template <>
-bool Hugeint::TryCast(hugeint_t input, float &result);
+DUCKDB_API bool Hugeint::TryCast(hugeint_t input, float &result);
 template <>
-bool Hugeint::TryCast(hugeint_t input, double &result);
+DUCKDB_API bool Hugeint::TryCast(hugeint_t input, double &result);
 template <>
-bool Hugeint::TryCast(hugeint_t input, long double &result);
+DUCKDB_API bool Hugeint::TryCast(hugeint_t input, long double &result);
 
 template <>
 bool Hugeint::TryConvert(int8_t value, hugeint_t &result);
@@ -157,5 +158,7 @@ template <>
 bool Hugeint::TryConvert(double value, hugeint_t &result);
 template <>
 bool Hugeint::TryConvert(long double value, hugeint_t &result);
+template <>
+bool Hugeint::TryConvert(const char *value, hugeint_t &result);
 
 } // namespace duckdb

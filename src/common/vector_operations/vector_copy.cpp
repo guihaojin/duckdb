@@ -7,7 +7,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/types/null_value.hpp"
 #include "duckdb/common/types/chunk_collection.hpp"
-
+#include "duckdb/storage/segment/uncompressed.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 
 namespace duckdb {
@@ -20,6 +20,17 @@ static void TemplatedCopy(const Vector &source, const SelectionVector &sel, Vect
 	for (idx_t i = 0; i < copy_count; i++) {
 		auto source_idx = sel.get_index(source_offset + i);
 		tdata[target_offset + i] = ldata[source_idx];
+	}
+}
+
+static const ValidityMask &CopyValidityMask(const Vector &v) {
+	switch (v.GetVectorType()) {
+	case VectorType::FLAT_VECTOR:
+		return FlatVector::Validity(v);
+	case VectorType::FSST_VECTOR:
+		return FSSTVector::Validity(v);
+	default:
+		throw InternalException("Unsupported vector type in vector copy");
 	}
 }
 
@@ -59,6 +70,9 @@ void VectorOperations::Copy(const Vector &source_p, Vector &target, const Select
 			sel = ConstantVector::ZeroSelectionVector(copy_count, owned_sel);
 			finished = true;
 			break;
+		case VectorType::FSST_VECTOR:
+			finished = true;
+			break;
 		case VectorType::FLAT_VECTOR:
 			finished = true;
 			break;
@@ -87,7 +101,7 @@ void VectorOperations::Copy(const Vector &source_p, Vector &target, const Select
 			tmask.Set(target_offset + i, valid);
 		}
 	} else {
-		auto &smask = FlatVector::Validity(*source);
+		auto &smask = CopyValidityMask(*source);
 		if (smask.IsMaskSet()) {
 			for (idx_t i = 0; i < copy_count; i++) {
 				auto idx = sel->get_index(source_offset + i);
@@ -110,6 +124,12 @@ void VectorOperations::Copy(const Vector &source_p, Vector &target, const Select
 	}
 
 	D_ASSERT(sel);
+
+	// For FSST Vectors we decompress instead of copying.
+	if (source->GetVectorType() == VectorType::FSST_VECTOR) {
+		FSSTVector::DecompressVector(*source, target, source_offset, target_offset, copy_count, sel);
+		return;
+	}
 
 	// now copy over the data
 	switch (source->GetType().InternalType()) {

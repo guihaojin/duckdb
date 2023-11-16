@@ -1,19 +1,20 @@
 #include "duckdb/main/materialized_query_result.hpp"
 #include "duckdb/common/to_string.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/common/box_renderer.hpp"
 
 namespace duckdb {
 
 MaterializedQueryResult::MaterializedQueryResult(StatementType statement_type, StatementProperties properties,
                                                  vector<string> names_p, unique_ptr<ColumnDataCollection> collection_p,
                                                  ClientProperties client_properties)
-    : QueryResult(QueryResultType::MATERIALIZED_RESULT, statement_type, properties, collection_p->Types(),
-                  move(names_p), move(client_properties)),
-      collection(move(collection_p)), scan_initialized(false) {
+    : QueryResult(QueryResultType::MATERIALIZED_RESULT, statement_type, std::move(properties), collection_p->Types(),
+                  std::move(names_p), std::move(client_properties)),
+      collection(std::move(collection_p)), scan_initialized(false) {
 }
 
-MaterializedQueryResult::MaterializedQueryResult(string error)
-    : QueryResult(QueryResultType::MATERIALIZED_RESULT, move(error)), scan_initialized(false) {
+MaterializedQueryResult::MaterializedQueryResult(PreservedError error)
+    : QueryResult(QueryResultType::MATERIALIZED_RESULT, std::move(error)), scan_initialized(false) {
 }
 
 string MaterializedQueryResult::ToString() {
@@ -28,20 +29,31 @@ string MaterializedQueryResult::ToString() {
 					result += "\t";
 				}
 				auto val = row.GetValue(col_idx);
-				result += val.IsNull() ? "NULL" : val.ToString();
+				result += val.IsNull() ? "NULL" : StringUtil::Replace(val.ToString(), string("\0", 1), "\\0");
 			}
 			result += "\n";
 		}
 		result += "\n";
 	} else {
-		result = error + "\n";
+		result = GetError() + "\n";
 	}
 	return result;
 }
 
+string MaterializedQueryResult::ToBox(ClientContext &context, const BoxRendererConfig &config) {
+	if (!success) {
+		return GetError() + "\n";
+	}
+	if (!collection) {
+		return "Internal error - result was successful but there was no collection";
+	}
+	BoxRenderer renderer(config);
+	return renderer.ToString(context, names, Collection());
+}
+
 Value MaterializedQueryResult::GetValue(idx_t column, idx_t index) {
 	if (!row_collection) {
-		row_collection = make_unique<ColumnDataRowCollection>(collection->GetRows());
+		row_collection = make_uniq<ColumnDataRowCollection>(collection->GetRows());
 	}
 	return row_collection->GetValue(column, index);
 }
@@ -51,9 +63,9 @@ idx_t MaterializedQueryResult::RowCount() const {
 }
 
 ColumnDataCollection &MaterializedQueryResult::Collection() {
-	if (!success) {
+	if (HasError()) {
 		throw InvalidInputException("Attempting to get collection from an unsuccessful query result\n: Error %s",
-		                            error);
+		                            GetError());
 	}
 	if (!collection) {
 		throw InternalException("Missing collection from materialized query result");
@@ -66,10 +78,10 @@ unique_ptr<DataChunk> MaterializedQueryResult::Fetch() {
 }
 
 unique_ptr<DataChunk> MaterializedQueryResult::FetchRaw() {
-	if (!success) {
-		throw InvalidInputException("Attempting to fetch from an unsuccessful query result\nError: %s", error);
+	if (HasError()) {
+		throw InvalidInputException("Attempting to fetch from an unsuccessful query result\nError: %s", GetError());
 	}
-	auto result = make_unique<DataChunk>();
+	auto result = make_uniq<DataChunk>();
 	collection->InitializeScanChunk(*result);
 	if (!scan_initialized) {
 		// we disallow zero copy so the chunk is independently usable even after the result is destroyed

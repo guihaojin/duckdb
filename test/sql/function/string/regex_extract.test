@@ -11,6 +11,17 @@ SELECT regexp_extract('foobarbaz', 'b..')
 bar
 
 query T
+SELECT regexp_extract('foobarbaz', 'B..')
+----
+(empty)
+
+# pass in regex options
+query T
+SELECT regexp_extract('foobarbaz', 'B..', 0, 'i')
+----
+bar
+
+query T
 SELECT regexp_extract('foobarbaz', 'b..', 1)
 ----
 (empty)
@@ -70,12 +81,14 @@ bar
 
 statement error
 SELECT regexp_extract(s, '(b..)(b..)', i) FROM test
+----
+Invalid Input Error: Group specification field must be a constant!
 
 # null values
 query T
 SELECT regexp_extract('foobarbaz', NULL, 0)
 ----
-(empty)
+NULL
 
 query T
 SELECT regexp_extract('foobarbaz', 'b..', NULL)

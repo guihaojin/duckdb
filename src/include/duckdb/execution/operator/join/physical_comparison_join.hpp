@@ -8,8 +8,8 @@
 
 #pragma once
 
-#include "duckdb/execution/operator/join/physical_join.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/execution/operator/join/physical_join.hpp"
 
 namespace duckdb {
 class ColumnDataCollection;

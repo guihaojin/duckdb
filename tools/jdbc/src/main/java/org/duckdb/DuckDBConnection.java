@@ -1,6 +1,8 @@
 package org.duckdb;
 
+import java.lang.reflect.InvocationTargetException;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.sql.Array;
 import java.sql.Blob;
 import java.sql.CallableStatement;
@@ -22,322 +24,344 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.Executor;
 
-public class DuckDBConnection implements java.sql.Connection {
-	protected ByteBuffer conn_ref = null;
-	protected DuckDBDatabase db;
-	protected boolean autoCommit = true;
-	protected boolean transactionRunning = false;
+public final class DuckDBConnection implements java.sql.Connection {
 
-	public DuckDBConnection(DuckDBDatabase db) throws SQLException {
-		if (db.db_ref == null) {
-			throw new SQLException("Database was shutdown");
-		}
-		conn_ref = DuckDBNative.duckdb_jdbc_connect(db.db_ref);
-		DuckDBNative.duckdb_jdbc_set_auto_commit(conn_ref, true);
-		this.db = db;
-	}
-	
-	public Statement createStatement(int resultSetType, int resultSetConcurrency, int resultSetHoldability)
-			throws SQLException {
-		if (isClosed()) {
-			throw new SQLException("Connection was closed");
-		}
-		if (resultSetConcurrency == ResultSet.CONCUR_READ_ONLY && resultSetType == ResultSet.TYPE_FORWARD_ONLY) {
-			return new DuckDBPreparedStatement(this);
-		}
-		throw new SQLFeatureNotSupportedException();
-	}
+    /** Name of the DuckDB default schema. */
+    public static final String DEFAULT_SCHEMA = "main";
 
-	public PreparedStatement prepareStatement(String sql, int resultSetType, int resultSetConcurrency,
-			int resultSetHoldability) throws SQLException {
-		if (isClosed()) {
-			throw new SQLException("Connection was closed");
-		}
-		if (resultSetConcurrency == ResultSet.CONCUR_READ_ONLY && resultSetType == ResultSet.TYPE_FORWARD_ONLY) {
-			return new DuckDBPreparedStatement(this, sql);
-		}
-		throw new SQLFeatureNotSupportedException();
-	}
+    ByteBuffer conn_ref;
+    boolean autoCommit = true;
+    boolean transactionRunning;
+    final String url;
+    private final boolean readOnly;
 
-	public Statement createStatement() throws SQLException {
-		return createStatement(ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
-	}
+    public static DuckDBConnection newConnection(String url, boolean readOnly, Properties properties)
+        throws SQLException {
+        if (!url.startsWith("jdbc:duckdb")) {
+            throw new SQLException("DuckDB JDBC URL needs to start with 'jdbc:duckdb:'");
+        }
+        String db_dir = url.substring("jdbc:duckdb:".length()).trim();
+        if (db_dir.length() == 0) {
+            db_dir = ":memory:";
+        }
+        ByteBuffer nativeReference =
+            DuckDBNative.duckdb_jdbc_startup(db_dir.getBytes(StandardCharsets.UTF_8), readOnly, properties);
+        return new DuckDBConnection(nativeReference, url, readOnly);
+    }
 
-	public Connection duplicate() throws SQLException {
-		if (db == null) {
-			throw new SQLException("Connection was closed");
-		}
-		if (db.db_ref == null) {
-			throw new SQLException("Database was shutdown");
-		}
-		return new DuckDBConnection(db);
-	}
+    private DuckDBConnection(ByteBuffer connectionReference, String url, boolean readOnly) throws SQLException {
+        conn_ref = connectionReference;
+        this.url = url;
+        this.readOnly = readOnly;
+        DuckDBNative.duckdb_jdbc_set_auto_commit(connectionReference, true);
+    }
 
-	public DuckDBDatabase getDatabase() {
-		return db;
-	}
+    public Statement createStatement(int resultSetType, int resultSetConcurrency, int resultSetHoldability)
+        throws SQLException {
+        if (isClosed()) {
+            throw new SQLException("Connection was closed");
+        }
+        if (resultSetConcurrency == ResultSet.CONCUR_READ_ONLY && resultSetType == ResultSet.TYPE_FORWARD_ONLY) {
+            return new DuckDBPreparedStatement(this);
+        }
+        throw new SQLFeatureNotSupportedException("createStatement");
+    }
 
-	public void commit() throws SQLException {
-		Statement s = createStatement();
-		s.execute("COMMIT");
-		transactionRunning = false;
-		s.close();
-	}
+    public PreparedStatement prepareStatement(String sql, int resultSetType, int resultSetConcurrency,
+                                              int resultSetHoldability) throws SQLException {
+        if (isClosed()) {
+            throw new SQLException("Connection was closed");
+        }
+        if (resultSetConcurrency == ResultSet.CONCUR_READ_ONLY && resultSetType == ResultSet.TYPE_FORWARD_ONLY) {
+            return new DuckDBPreparedStatement(this, sql);
+        }
+        throw new SQLFeatureNotSupportedException("prepareStatement");
+    }
 
-	public void rollback() throws SQLException {
-		Statement s = createStatement();
-		s.execute("ROLLBACK");
-		transactionRunning = false;
-		s.close();
-	}
+    public Statement createStatement() throws SQLException {
+        return createStatement(ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
+    }
 
-	protected void finalize() throws Throwable {
-		close();
-	}
+    public Connection duplicate() throws SQLException {
+        if (isClosed()) {
+            throw new SQLException("Connection is closed");
+        }
+        return new DuckDBConnection(DuckDBNative.duckdb_jdbc_connect(conn_ref), url, readOnly);
+    }
 
-	public synchronized void close() throws SQLException {
-		if (conn_ref != null) {
-			DuckDBNative.duckdb_jdbc_disconnect(conn_ref);
-			conn_ref = null;
-		}
-		db = null;
-	}
+    public void commit() throws SQLException {
+        try (Statement s = createStatement()) {
+            s.execute("COMMIT");
+            transactionRunning = false;
+        }
+    }
 
-	public boolean isClosed() throws SQLException {
-		return conn_ref == null;
-	}
+    public void rollback() throws SQLException {
+        try (Statement s = createStatement()) {
+            s.execute("ROLLBACK");
+            transactionRunning = false;
+        }
+    }
 
-	public boolean isValid(int timeout) throws SQLException {
-		if (isClosed()) {
-			return false;
-		}
-		// run a query just to be sure
-		Statement s = createStatement();
-		ResultSet rs = s.executeQuery("SELECT 42");
-		if (!rs.next() || rs.getInt(1) != 42) {
-			rs.close();
-			s.close();
-			return false;
-		}
-		rs.close();
-		s.close();
+    protected void finalize() throws Throwable {
+        close();
+    }
 
-		return true;
-	}
+    public synchronized void close() throws SQLException {
+        if (conn_ref != null) {
+            DuckDBNative.duckdb_jdbc_disconnect(conn_ref);
+            conn_ref = null;
+        }
+    }
 
-	public SQLWarning getWarnings() throws SQLException {
-		return null;
-	}
+    public boolean isClosed() throws SQLException {
+        return conn_ref == null;
+    }
 
-	public void clearWarnings() throws SQLException {
-	}
+    public boolean isValid(int timeout) throws SQLException {
+        if (isClosed()) {
+            return false;
+        }
+        // run a query just to be sure
+        try (Statement s = createStatement(); ResultSet rs = s.executeQuery("SELECT 42")) {
+            return rs.next() && rs.getInt(1) == 42;
+        }
+    }
 
-	public void setTransactionIsolation(int level) throws SQLException {
-		if (level > TRANSACTION_REPEATABLE_READ) {
-			throw new SQLFeatureNotSupportedException();
-		}
-	}
+    public SQLWarning getWarnings() throws SQLException {
+        return null;
+    }
 
-	public int getTransactionIsolation() throws SQLException {
-		return TRANSACTION_REPEATABLE_READ;
-	}
+    public void clearWarnings() throws SQLException {
+    }
 
-	public void setReadOnly(boolean readOnly) throws SQLException {
-		if (readOnly != db.read_only) {
-			throw new SQLFeatureNotSupportedException("Can't change read-only status on connection level.");
-		}
-	}
+    public void setTransactionIsolation(int level) throws SQLException {
+        if (level > TRANSACTION_REPEATABLE_READ) {
+            throw new SQLFeatureNotSupportedException("setTransactionIsolation");
+        }
+    }
 
-	public boolean isReadOnly() throws SQLException {
-		return db.read_only;
-	}
+    public int getTransactionIsolation() throws SQLException {
+        return TRANSACTION_REPEATABLE_READ;
+    }
 
-	public void setAutoCommit(boolean autoCommit) throws SQLException {
-		if (isClosed()) {
-			throw new SQLException("Connection was closed");
-		}
-		
-		if (this.autoCommit != autoCommit) {
-			this.autoCommit = autoCommit;
+    public void setReadOnly(boolean readOnly) throws SQLException {
+        if (readOnly != this.readOnly) {
+            throw new SQLFeatureNotSupportedException("Can't change read-only status on connection level.");
+        }
+    }
 
-			// A running transaction is committed if switched to auto-commit
-			if (transactionRunning && autoCommit) {
-				this.commit();
-			}
-		}
-		return;
+    public boolean isReadOnly() {
+        return readOnly;
+    }
 
-		// Native method is not working as one would expect ... uncomment maybe later
-		// DuckDBNative.duckdb_jdbc_set_auto_commit(conn_ref, autoCommit);
-	}
+    public void setAutoCommit(boolean autoCommit) throws SQLException {
+        if (isClosed()) {
+            throw new SQLException("Connection was closed");
+        }
 
-	public boolean getAutoCommit() throws SQLException {
-		if (isClosed()) {
-			throw new SQLException("Connection was closed");
-		}
-		return this.autoCommit;
+        if (this.autoCommit != autoCommit) {
+            this.autoCommit = autoCommit;
 
-		// Native method is not working as one would expect ... uncomment maybe later
-		// return DuckDBNative.duckdb_jdbc_get_auto_commit(conn_ref);
-	}
+            // A running transaction is committed if switched to auto-commit
+            if (transactionRunning && autoCommit) {
+                this.commit();
+            }
+        }
+        return;
 
-	public PreparedStatement prepareStatement(String sql) throws SQLException {
-		return prepareStatement(sql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY, 0);
-	}
+        // Native method is not working as one would expect ... uncomment maybe later
+        // DuckDBNative.duckdb_jdbc_set_auto_commit(conn_ref, autoCommit);
+    }
 
-	public DatabaseMetaData getMetaData() throws SQLException {
-		return new DuckDBDatabaseMetaData(this);
-	}
+    public boolean getAutoCommit() throws SQLException {
+        if (isClosed()) {
+            throw new SQLException("Connection was closed");
+        }
+        return this.autoCommit;
 
-	public void setCatalog(String catalog) throws SQLException {
-		// not supported => no-op
-	}
+        // Native method is not working as one would expect ... uncomment maybe later
+        // return DuckDBNative.duckdb_jdbc_get_auto_commit(conn_ref);
+    }
 
-	public String getCatalog() throws SQLException {
-		return null;
-	}
+    public PreparedStatement prepareStatement(String sql) throws SQLException {
+        return prepareStatement(sql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY, 0);
+    }
 
-	public void setSchema(String schema) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public DatabaseMetaData getMetaData() throws SQLException {
+        return new DuckDBDatabaseMetaData(this);
+    }
 
-	public String getSchema() throws SQLException {
-		return DuckDBNative.duckdb_jdbc_get_schema(conn_ref);
-	}
+    public void setCatalog(String catalog) throws SQLException {
+        DuckDBNative.duckdb_jdbc_set_catalog(conn_ref, catalog);
+    }
 
-	public void abort(Executor executor) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public String getCatalog() throws SQLException {
+        return DuckDBNative.duckdb_jdbc_get_catalog(conn_ref);
+    }
 
-	public Clob createClob() throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public void setSchema(String schema) throws SQLException {
+        DuckDBNative.duckdb_jdbc_set_schema(conn_ref, schema);
+    }
 
-	public Blob createBlob() throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public String getSchema() throws SQLException {
+        return DuckDBNative.duckdb_jdbc_get_schema(conn_ref);
+    }
 
-	// less likely to implement this stuff
+    @Override
+    public <T> T unwrap(Class<T> iface) throws SQLException {
+        return JdbcUtils.unwrap(this, iface);
+    }
 
-	public <T> T unwrap(Class<T> iface) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    @Override
+    public boolean isWrapperFor(Class<?> iface) {
+        return iface.isInstance(this);
+    }
 
-	public boolean isWrapperFor(Class<?> iface) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public void abort(Executor executor) throws SQLException {
+        throw new SQLFeatureNotSupportedException("abort");
+    }
 
-	public CallableStatement prepareCall(String sql) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public Clob createClob() throws SQLException {
+        throw new SQLFeatureNotSupportedException("createClob");
+    }
 
-	public String nativeSQL(String sql) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public Blob createBlob() throws SQLException {
+        throw new SQLFeatureNotSupportedException("createBlob");
+    }
 
-	public Statement createStatement(int resultSetType, int resultSetConcurrency) throws SQLException {
-		return createStatement(resultSetType, resultSetConcurrency, 0);
-	}
+    // less likely to implement this stuff
 
-	public PreparedStatement prepareStatement(String sql, int resultSetType, int resultSetConcurrency)
-			throws SQLException {
-		return prepareStatement(sql, resultSetType, resultSetConcurrency, 0);
-	}
+    public CallableStatement prepareCall(String sql) throws SQLException {
+        throw new SQLFeatureNotSupportedException("prepareCall");
+    }
 
-	public CallableStatement prepareCall(String sql, int resultSetType, int resultSetConcurrency) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public String nativeSQL(String sql) throws SQLException {
+        throw new SQLFeatureNotSupportedException("nativeSQL");
+    }
 
-	public Map<String, Class<?>> getTypeMap() throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public Statement createStatement(int resultSetType, int resultSetConcurrency) throws SQLException {
+        return createStatement(resultSetType, resultSetConcurrency, 0);
+    }
 
-	public void setTypeMap(Map<String, Class<?>> map) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public PreparedStatement prepareStatement(String sql, int resultSetType, int resultSetConcurrency)
+        throws SQLException {
+        return prepareStatement(sql, resultSetType, resultSetConcurrency, 0);
+    }
 
-	public void setHoldability(int holdability) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public CallableStatement prepareCall(String sql, int resultSetType, int resultSetConcurrency) throws SQLException {
+        throw new SQLFeatureNotSupportedException("prepareCall");
+    }
 
-	public int getHoldability() throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public Map<String, Class<?>> getTypeMap() throws SQLException {
+        throw new SQLFeatureNotSupportedException("getTypeMap");
+    }
 
-	public Savepoint setSavepoint() throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public void setTypeMap(Map<String, Class<?>> map) throws SQLException {
+        throw new SQLFeatureNotSupportedException("setTypeMap");
+    }
 
-	public Savepoint setSavepoint(String name) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public void setHoldability(int holdability) throws SQLException {
+        throw new SQLFeatureNotSupportedException("setHoldability");
+    }
 
-	public void rollback(Savepoint savepoint) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public int getHoldability() throws SQLException {
+        throw new SQLFeatureNotSupportedException("getHoldability");
+    }
 
-	public void releaseSavepoint(Savepoint savepoint) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public Savepoint setSavepoint() throws SQLException {
+        throw new SQLFeatureNotSupportedException("setSavepoint");
+    }
 
-	public CallableStatement prepareCall(String sql, int resultSetType, int resultSetConcurrency,
-			int resultSetHoldability) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public Savepoint setSavepoint(String name) throws SQLException {
+        throw new SQLFeatureNotSupportedException("setSavepoint");
+    }
 
-	public PreparedStatement prepareStatement(String sql, int autoGeneratedKeys) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public void rollback(Savepoint savepoint) throws SQLException {
+        throw new SQLFeatureNotSupportedException("rollback");
+    }
 
-	public PreparedStatement prepareStatement(String sql, int[] columnIndexes) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public void releaseSavepoint(Savepoint savepoint) throws SQLException {
+        throw new SQLFeatureNotSupportedException("releaseSavepoint");
+    }
 
-	public PreparedStatement prepareStatement(String sql, String[] columnNames) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public CallableStatement prepareCall(String sql, int resultSetType, int resultSetConcurrency,
+                                         int resultSetHoldability) throws SQLException {
+        throw new SQLFeatureNotSupportedException("prepareCall");
+    }
 
-	public NClob createNClob() throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public PreparedStatement prepareStatement(String sql, int autoGeneratedKeys) throws SQLException {
+        throw new SQLFeatureNotSupportedException("prepareStatement");
+    }
 
-	public SQLXML createSQLXML() throws SQLException {
-		throw new SQLFeatureNotSupportedException(); // hell no
-	}
+    public PreparedStatement prepareStatement(String sql, int[] columnIndexes) throws SQLException {
+        throw new SQLFeatureNotSupportedException("prepareStatement");
+    }
 
-	public void setClientInfo(String name, String value) throws SQLClientInfoException {
-		throw new SQLClientInfoException();
-	}
+    public PreparedStatement prepareStatement(String sql, String[] columnNames) throws SQLException {
+        throw new SQLFeatureNotSupportedException("prepareStatement");
+    }
 
-	public void setClientInfo(Properties properties) throws SQLClientInfoException {
-		throw new SQLClientInfoException();
-	}
+    public NClob createNClob() throws SQLException {
+        throw new SQLFeatureNotSupportedException("createNClob");
+    }
 
-	public String getClientInfo(String name) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public SQLXML createSQLXML() throws SQLException {
+        throw new SQLFeatureNotSupportedException("createSQLXML"); // hell no
+    }
 
-	public Properties getClientInfo() throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public void setClientInfo(String name, String value) throws SQLClientInfoException {
+        throw new SQLClientInfoException();
+    }
 
-	public Array createArrayOf(String typeName, Object[] elements) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public void setClientInfo(Properties properties) throws SQLClientInfoException {
+        throw new SQLClientInfoException();
+    }
 
-	public Struct createStruct(String typeName, Object[] attributes) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public String getClientInfo(String name) throws SQLException {
+        throw new SQLFeatureNotSupportedException("getClientInfo");
+    }
 
-	public void setNetworkTimeout(Executor executor, int milliseconds) throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public Properties getClientInfo() throws SQLException {
+        throw new SQLFeatureNotSupportedException("getClientInfo");
+    }
 
-	public int getNetworkTimeout() throws SQLException {
-		throw new SQLFeatureNotSupportedException();
-	}
+    public Array createArrayOf(String typeName, Object[] elements) throws SQLException {
+        throw new SQLFeatureNotSupportedException("createArrayOf");
+    }
 
-	public DuckDBAppender createAppender(String schemaName, String tableName) throws SQLException {
-		return new DuckDBAppender(this, schemaName, tableName);
-	}
+    public Struct createStruct(String typeName, Object[] attributes) throws SQLException {
+        throw new SQLFeatureNotSupportedException("createStruct");
+    }
+
+    public void setNetworkTimeout(Executor executor, int milliseconds) throws SQLException {
+        throw new SQLFeatureNotSupportedException("setNetworkTimeout");
+    }
+
+    public int getNetworkTimeout() throws SQLException {
+        throw new SQLFeatureNotSupportedException("getNetworkTimeout");
+    }
+
+    public DuckDBAppender createAppender(String schemaName, String tableName) throws SQLException {
+        return new DuckDBAppender(this, schemaName, tableName);
+    }
+
+    private static long getArrowStreamAddress(Object arrow_array_stream) {
+        try {
+            Class<?> arrow_array_stream_class = Class.forName("org.apache.arrow.c.ArrowArrayStream");
+            if (!arrow_array_stream_class.isInstance(arrow_array_stream)) {
+                throw new RuntimeException("Need to pass an ArrowArrayStream");
+            }
+            return (Long) arrow_array_stream_class.getMethod("memoryAddress").invoke(arrow_array_stream);
+
+        } catch (IllegalAccessException | InvocationTargetException | NoSuchMethodException | SecurityException |
+                 ClassNotFoundException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public void registerArrowStream(String name, Object arrow_array_stream) {
+        long array_stream_address = getArrowStreamAddress(arrow_array_stream);
+        DuckDBNative.duckdb_jdbc_arrow_register(conn_ref, array_stream_address, name.getBytes(StandardCharsets.UTF_8));
+    }
 }

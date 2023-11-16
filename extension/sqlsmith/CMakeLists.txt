@@ -6,12 +6,13 @@ include_directories(include)
 include_directories(third_party/sqlsmith/include)
 add_subdirectory(third_party)
 
-set(SQLSMITH_SOURCES sqlsmith-extension.cpp statement_simplifier.cpp
-                     ${SQLSMITH_OBJECT_FILES})
+set(SQLSMITH_SOURCES
+    sqlsmith_extension.cpp statement_generator.cpp statement_simplifier.cpp
+    fuzzyduck.cpp ${SQLSMITH_OBJECT_FILES})
 
-add_library(sqlsmith_extension STATIC ${SQLSMITH_SOURCES})
-set(INGORE_WARNINGS OFF)
-build_loadable_extension(sqlsmith ${SQLSMITH_SOURCES} ${IGNORE_WARNINGS})
+build_static_extension(sqlsmith ${SQLSMITH_SOURCES})
+set(PARAMETERS "-warnings")
+build_loadable_extension(sqlsmith ${PARAMETERS} ${SQLSMITH_SOURCES})
 
 install(
   TARGETS sqlsmith_extension

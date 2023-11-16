@@ -1,5 +1,24 @@
 VariableResetStmt:
-			RESET reset_rest						{ $$ = (PGNode *) $2; }
+			RESET reset_rest
+			{
+				$2->scope = VAR_SET_SCOPE_DEFAULT;
+				$$ = (PGNode *) $2;
+			}
+			| RESET LOCAL reset_rest
+				{
+					$3->scope = VAR_SET_SCOPE_LOCAL;
+					$$ = (PGNode *) $3;
+				}
+			| RESET SESSION reset_rest
+				{
+					$3->scope = VAR_SET_SCOPE_SESSION;
+					$$ = (PGNode *) $3;
+				}
+			| RESET GLOBAL reset_rest
+				{
+					$3->scope = VAR_SET_SCOPE_GLOBAL;
+					$$ = (PGNode *) $3;
+				}
 		;
 
 

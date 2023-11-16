@@ -8,138 +8,97 @@
 
 #pragma once
 
+#include "duckdb/common/hugeint.hpp"
 #include "duckdb/common/types.hpp"
+
+#include <type_traits>
+
+// Undef annoying windows macro
+#undef max
+
+#include <limits>
 
 namespace duckdb {
 
 template <class T>
 struct NumericLimits {
-	static T Minimum();
-	static T Maximum();
-	static bool IsSigned();
-	static idx_t Digits();
+	static constexpr T Minimum() {
+		return std::numeric_limits<T>::lowest();
+	}
+	static constexpr T Maximum() {
+		return std::numeric_limits<T>::max();
+	}
+	DUCKDB_API static constexpr bool IsSigned() {
+		return std::is_signed<T>::value;
+	}
+	DUCKDB_API static constexpr idx_t Digits();
 };
 
 template <>
-struct NumericLimits<int8_t> {
-	static int8_t Minimum();
-	static int8_t Maximum();
-	static bool IsSigned() {
-		return true;
-	}
-	static idx_t Digits() {
-		return 3;
-	}
-};
-template <>
-struct NumericLimits<int16_t> {
-	static int16_t Minimum();
-	static int16_t Maximum();
-	static bool IsSigned() {
-		return true;
-	}
-	static idx_t Digits() {
-		return 5;
-	}
-};
-template <>
-struct NumericLimits<int32_t> {
-	static int32_t Minimum();
-	static int32_t Maximum();
-	static bool IsSigned() {
-		return true;
-	}
-	static idx_t Digits() {
-		return 10;
-	}
-};
-template <>
-struct NumericLimits<int64_t> {
-	static int64_t Minimum();
-	static int64_t Maximum();
-	static bool IsSigned() {
-		return true;
-	}
-	static idx_t Digits() {
-		return 19;
-	}
-};
-template <>
 struct NumericLimits<hugeint_t> {
-	static hugeint_t Minimum();
-	static hugeint_t Maximum();
-	static bool IsSigned() {
+	static constexpr hugeint_t Minimum() {
+		return {std::numeric_limits<int64_t>::lowest(), 1};
+	};
+	static constexpr hugeint_t Maximum() {
+		return {std::numeric_limits<int64_t>::max(), std::numeric_limits<uint64_t>::max()};
+	};
+	static constexpr bool IsSigned() {
 		return true;
 	}
-	static idx_t Digits() {
+
+	static constexpr idx_t Digits() {
 		return 39;
 	}
 };
+
 template <>
-struct NumericLimits<uint8_t> {
-	static uint8_t Minimum();
-	static uint8_t Maximum();
-	static bool IsSigned() {
-		return false;
-	}
-	static idx_t Digits() {
-		return 3;
-	}
-};
+constexpr idx_t NumericLimits<int8_t>::Digits() {
+	return 3;
+}
+
 template <>
-struct NumericLimits<uint16_t> {
-	static uint16_t Minimum();
-	static uint16_t Maximum();
-	static bool IsSigned() {
-		return false;
-	}
-	static idx_t Digits() {
-		return 5;
-	}
-};
+constexpr idx_t NumericLimits<int16_t>::Digits() {
+	return 5;
+}
+
 template <>
-struct NumericLimits<uint32_t> {
-	static uint32_t Minimum();
-	static uint32_t Maximum();
-	static bool IsSigned() {
-		return false;
-	}
-	static idx_t Digits() {
-		return 10;
-	}
-};
+constexpr idx_t NumericLimits<int32_t>::Digits() {
+	return 10;
+}
+
 template <>
-struct NumericLimits<uint64_t> {
-	static uint64_t Minimum();
-	static uint64_t Maximum();
-	static bool IsSigned() {
-		return false;
-	}
-	static idx_t Digits() {
-		return 20;
-	}
-};
+constexpr idx_t NumericLimits<int64_t>::Digits() {
+	return 19;
+}
+
 template <>
-struct NumericLimits<float> {
-	static float Minimum();
-	static float Maximum();
-	static bool IsSigned() {
-		return true;
-	}
-	static idx_t Digits() {
-		return 127;
-	}
-};
+constexpr idx_t NumericLimits<uint8_t>::Digits() {
+	return 3;
+}
+
 template <>
-struct NumericLimits<double> {
-	static double Minimum();
-	static double Maximum();
-	static bool IsSigned() {
-		return true;
-	}
-	static idx_t Digits() {
-		return 250;
-	}
-};
+constexpr idx_t NumericLimits<uint16_t>::Digits() {
+	return 5;
+}
+
+template <>
+constexpr idx_t NumericLimits<uint32_t>::Digits() {
+	return 10;
+}
+
+template <>
+constexpr idx_t NumericLimits<uint64_t>::Digits() {
+	return 20;
+}
+
+template <>
+constexpr idx_t NumericLimits<float>::Digits() {
+	return 127;
+}
+
+template <>
+constexpr idx_t NumericLimits<double>::Digits() {
+	return 250;
+}
 
 } // namespace duckdb

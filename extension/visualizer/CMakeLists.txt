@@ -4,9 +4,9 @@ project(VisualizerExtension)
 
 include_directories(include)
 
-add_library(visualizer_extension STATIC visualizer-extension.cpp)
-set(INGORE_WARNINGS OFF)
-build_loadable_extension(visualizer visualizer-extension.cpp ${IGNORE_WARNINGS})
+build_static_extension(visualizer visualizer_extension.cpp)
+set(PARAMETERS "-warnings")
+build_loadable_extension(visualizer ${PARAMETERS} visualizer_extension.cpp)
 install(
   TARGETS visualizer_extension
   EXPORT "${DUCKDB_EXPORT_SET}"

@@ -1,11 +1,13 @@
 #include "duckdb/planner/operator/logical_aggregate.hpp"
+
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/main/config.hpp"
 
 namespace duckdb {
 
 LogicalAggregate::LogicalAggregate(idx_t group_index, idx_t aggregate_index, vector<unique_ptr<Expression>> select_list)
-    : LogicalOperator(LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY, move(select_list)), group_index(group_index),
-      aggregate_index(aggregate_index), groupings_index(DConstants::INVALID_INDEX) {
+    : LogicalOperator(LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY, std::move(select_list)),
+      group_index(group_index), aggregate_index(aggregate_index), groupings_index(DConstants::INVALID_INDEX) {
 }
 
 void LogicalAggregate::ResolveTypes() {
@@ -25,6 +27,7 @@ void LogicalAggregate::ResolveTypes() {
 vector<ColumnBinding> LogicalAggregate::GetColumnBindings() {
 	D_ASSERT(groupings_index != DConstants::INVALID_INDEX || grouping_functions.empty());
 	vector<ColumnBinding> result;
+	result.reserve(groups.size() + expressions.size() + grouping_functions.size());
 	for (idx_t i = 0; i < groups.size(); i++) {
 		result.emplace_back(group_index, i);
 	}
@@ -52,6 +55,32 @@ string LogicalAggregate::ParamsToString() const {
 		result += expressions[i]->GetName();
 	}
 	return result;
+}
+
+idx_t LogicalAggregate::EstimateCardinality(ClientContext &context) {
+	if (groups.empty()) {
+		// ungrouped aggregate
+		return 1;
+	}
+	return LogicalOperator::EstimateCardinality(context);
+}
+
+vector<idx_t> LogicalAggregate::GetTableIndex() const {
+	vector<idx_t> result {group_index, aggregate_index};
+	if (groupings_index != DConstants::INVALID_INDEX) {
+		result.push_back(groupings_index);
+	}
+	return result;
+}
+
+string LogicalAggregate::GetName() const {
+#ifdef DEBUG
+	if (DBConfigOptions::debug_print_bindings) {
+		return LogicalOperator::GetName() +
+		       StringUtil::Format(" #%llu, #%llu, #%llu", group_index, aggregate_index, groupings_index);
+	}
+#endif
+	return LogicalOperator::GetName();
 }
 
 } // namespace duckdb

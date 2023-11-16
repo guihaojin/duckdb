@@ -7,9 +7,9 @@ using namespace duckdb;
 using namespace std;
 
 static void test_in_memory_initialization(string dbdir) {
-	unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
-	unique_ptr<DuckDB> db;
-	unique_ptr<Connection> con;
+	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+	duckdb::unique_ptr<DuckDB> db;
+	duckdb::unique_ptr<Connection> con;
 	string in_memory_tmp = ".tmp";
 
 	// make sure the temporary folder does not exist
@@ -17,17 +17,17 @@ static void test_in_memory_initialization(string dbdir) {
 	fs->RemoveDirectory(in_memory_tmp);
 
 	// cannot create an in-memory database using ":memory:" argument
-	REQUIRE_NOTHROW(db = make_unique<DuckDB>(dbdir));
-	REQUIRE_NOTHROW(con = make_unique<Connection>(*db));
+	REQUIRE_NOTHROW(db = make_uniq<DuckDB>(dbdir));
+	REQUIRE_NOTHROW(con = make_uniq<Connection>(*db));
 
 	// force the in-memory directory to be created by creating a table bigger than the memory limit
-	REQUIRE_NO_FAIL(con->Query("PRAGMA memory_limit='1MB'"));
+	REQUIRE_NO_FAIL(con->Query("PRAGMA memory_limit='2MB'"));
 	REQUIRE_NO_FAIL(con->Query("CREATE TABLE integers AS SELECT * FROM range(1000000)"));
 
-	// the temporary folder .tmp should be created in in-memory mode, but was not
+	// the temporary folder .tmp should be created in in-memory mode
 	REQUIRE(fs->DirectoryExists(in_memory_tmp));
 
-	// the database dir should not be created in in-memory mode, but was
+	// the database dir should not be created in in-memory mode
 	REQUIRE(!fs->DirectoryExists(dbdir));
 
 	// clean up
@@ -39,10 +39,10 @@ static void test_in_memory_initialization(string dbdir) {
 	fs->RemoveDirectory(in_memory_tmp);
 }
 
-TEST_CASE("Test in-memory database initialization argument \":memory:\"", "[api]") {
+TEST_CASE("Test in-memory database initialization argument \":memory:\"", "[api][.]") {
 	test_in_memory_initialization(":memory:");
 }
 
-TEST_CASE("Test in-memory database initialization argument \"\"", "[api]") {
+TEST_CASE("Test in-memory database initialization argument \"\"", "[api][.]") {
 	test_in_memory_initialization("");
 }

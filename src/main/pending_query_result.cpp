@@ -6,12 +6,13 @@ namespace duckdb {
 
 PendingQueryResult::PendingQueryResult(shared_ptr<ClientContext> context_p, PreparedStatementData &statement,
                                        vector<LogicalType> types_p, bool allow_stream_result)
-    : BaseQueryResult(QueryResultType::PENDING_RESULT, statement.statement_type, statement.properties, move(types_p),
-                      statement.names),
-      context(move(context_p)), allow_stream_result(allow_stream_result) {
+    : BaseQueryResult(QueryResultType::PENDING_RESULT, statement.statement_type, statement.properties,
+                      std::move(types_p), statement.names),
+      context(std::move(context_p)), allow_stream_result(allow_stream_result) {
 }
 
-PendingQueryResult::PendingQueryResult(string error) : BaseQueryResult(QueryResultType::PENDING_RESULT, move(error)) {
+PendingQueryResult::PendingQueryResult(PreservedError error)
+    : BaseQueryResult(QueryResultType::PENDING_RESULT, std::move(error)) {
 }
 
 PendingQueryResult::~PendingQueryResult() {
@@ -19,20 +20,26 @@ PendingQueryResult::~PendingQueryResult() {
 
 unique_ptr<ClientContextLock> PendingQueryResult::LockContext() {
 	if (!context) {
-		throw InvalidInputException("Attempting to execute an unsuccessful or closed pending query result\nError: %s",
-		                            error);
+		if (HasError()) {
+			throw InvalidInputException(
+			    "Attempting to execute an unsuccessful or closed pending query result\nError: %s", GetError());
+		}
+		throw InvalidInputException("Attempting to execute an unsuccessful or closed pending query result");
 	}
 	return context->LockContext();
 }
 
 void PendingQueryResult::CheckExecutableInternal(ClientContextLock &lock) {
-	bool invalidated = !success || !context;
+	bool invalidated = HasError() || !context;
 	if (!invalidated) {
 		invalidated = !context->IsActiveResult(lock, this);
 	}
 	if (invalidated) {
-		throw InvalidInputException("Attempting to execute an unsuccessful or closed pending query result\nError: %s",
-		                            error);
+		if (HasError()) {
+			throw InvalidInputException(
+			    "Attempting to execute an unsuccessful or closed pending query result\nError: %s", GetError());
+		}
+		throw InvalidInputException("Attempting to execute an unsuccessful or closed pending query result");
 	}
 }
 
@@ -48,10 +55,11 @@ PendingExecutionResult PendingQueryResult::ExecuteTaskInternal(ClientContextLock
 
 unique_ptr<QueryResult> PendingQueryResult::ExecuteInternal(ClientContextLock &lock) {
 	CheckExecutableInternal(lock);
-	while (ExecuteTaskInternal(lock) == PendingExecutionResult::RESULT_NOT_READY) {
+	// Busy wait while execution is not finished
+	while (!IsFinished(ExecuteTaskInternal(lock))) {
 	}
-	if (!success) {
-		return make_unique<MaterializedQueryResult>(error);
+	if (HasError()) {
+		return make_uniq<MaterializedQueryResult>(error);
 	}
 	auto result = context->FetchResultInternal(lock, *this);
 	Close();
@@ -65,6 +73,13 @@ unique_ptr<QueryResult> PendingQueryResult::Execute() {
 
 void PendingQueryResult::Close() {
 	context.reset();
+}
+
+bool PendingQueryResult::IsFinished(PendingExecutionResult result) {
+	if (result == PendingExecutionResult::RESULT_READY || result == PendingExecutionResult::EXECUTION_ERROR) {
+		return true;
+	}
+	return false;
 }
 
 } // namespace duckdb

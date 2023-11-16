@@ -13,6 +13,7 @@
 
 namespace duckdb {
 class BaseStatistics;
+class ClientContext;
 
 //!  The Expression class represents a bound Expression with a return type
 class Expression : public BaseExpression {
@@ -37,18 +38,22 @@ public:
 
 	hash_t Hash() const override;
 
-	bool Equals(const BaseExpression *other) const override {
+	bool Equals(const BaseExpression &other) const override {
 		if (!BaseExpression::Equals(other)) {
 			return false;
 		}
-		return return_type == ((Expression *)other)->return_type;
+		return return_type == ((Expression &)other).return_type;
 	}
-
-	static bool Equals(Expression *left, Expression *right) {
-		return BaseExpression::Equals((BaseExpression *)left, (BaseExpression *)right);
+	static bool Equals(const Expression &left, const Expression &right) {
+		return left.Equals(right);
 	}
+	static bool Equals(const unique_ptr<Expression> &left, const unique_ptr<Expression> &right);
+	static bool ListEquals(const vector<unique_ptr<Expression>> &left, const vector<unique_ptr<Expression>> &right);
 	//! Create a copy of this expression
 	virtual unique_ptr<Expression> Copy() = 0;
+
+	virtual void Serialize(Serializer &serializer) const;
+	static unique_ptr<Expression> Deserialize(Deserializer &deserializer);
 
 protected:
 	//! Copy base Expression properties from another expression to this one,

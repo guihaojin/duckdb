@@ -10,33 +10,37 @@
 
 #include "duckdb/parser/parsed_data/create_index_info.hpp"
 #include "duckdb/planner/logical_operator.hpp"
+#include "duckdb/function/table_function.hpp"
 
 namespace duckdb {
 
 class LogicalCreateIndex : public LogicalOperator {
 public:
-	LogicalCreateIndex(TableCatalogEntry &table, vector<column_t> column_ids,
-	                   vector<unique_ptr<Expression>> expressions, unique_ptr<CreateIndexInfo> info)
-	    : LogicalOperator(LogicalOperatorType::LOGICAL_CREATE_INDEX), table(table), column_ids(column_ids),
-	      info(std::move(info)) {
-		for (auto &expr : expressions) {
-			this->unbound_expressions.push_back(expr->Copy());
-		}
-		this->expressions = move(expressions);
-	}
+	static constexpr const LogicalOperatorType TYPE = LogicalOperatorType::LOGICAL_CREATE_INDEX;
+
+public:
+	LogicalCreateIndex(unique_ptr<CreateIndexInfo> info_p, vector<unique_ptr<Expression>> expressions_p,
+	                   TableCatalogEntry &table_p);
+
+	// Info for index creation
+	unique_ptr<CreateIndexInfo> info;
 
 	//! The table to create the index for
 	TableCatalogEntry &table;
-	//! Column IDs needed for index creation
-	vector<column_t> column_ids;
-	// Info for index creation
-	unique_ptr<CreateIndexInfo> info;
+
 	//! Unbound expressions to be used in the optimizer
 	vector<unique_ptr<Expression>> unbound_expressions;
 
+public:
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<LogicalOperator> Deserialize(Deserializer &deserializer);
+
 protected:
-	void ResolveTypes() override {
-		types.emplace_back(LogicalType::BIGINT);
-	}
+	void ResolveTypes() override;
+
+private:
+	LogicalCreateIndex(ClientContext &context, unique_ptr<CreateInfo> info, vector<unique_ptr<Expression>> expressions);
+
+	TableCatalogEntry &BindTable(ClientContext &context, CreateIndexInfo &info);
 };
 } // namespace duckdb

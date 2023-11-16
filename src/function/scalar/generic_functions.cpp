@@ -3,14 +3,8 @@
 namespace duckdb {
 
 void BuiltinFunctions::RegisterGenericFunctions() {
-	Register<AliasFun>();
-	Register<HashFun>();
-	Register<LeastFun>();
-	Register<GreatestFun>();
-	Register<StatsFun>();
-	Register<TypeOfFun>();
-	Register<CurrentSettingFun>();
-	Register<SystemFun>();
+	Register<ConstantOrNull>();
+	Register<ExportAggregateFunction>();
 }
 
 } // namespace duckdb

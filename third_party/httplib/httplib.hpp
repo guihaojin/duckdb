@@ -104,8 +104,10 @@
 #define CPPHTTPLIB_RECV_FLAGS 0
 #endif
 
-#ifndef CPPHTTPLIB_SEND_FLAGS
+#ifndef MSG_NOSIGNAL
 #define CPPHTTPLIB_SEND_FLAGS 0
+#else
+#define CPPHTTPLIB_SEND_FLAGS MSG_NOSIGNAL
 #endif
 
 #ifndef CPPHTTPLIB_LISTEN_BACKLOG
@@ -181,7 +183,16 @@ using socket_t = SOCKET;
 
 #include <arpa/inet.h>
 #include <cstring>
+#ifndef __MVS__
 #include <ifaddrs.h>
+#endif
+#ifdef __MVS__
+#include <net/if.h>
+#include <strings.h>
+#ifndef NI_MAXHOST
+#define NI_MAXHOST 1025
+#endif
+#endif
 #include <netdb.h>
 #include <netinet/in.h>
 #ifdef __linux__
@@ -2666,7 +2677,7 @@ inline bool bind_ip_address(socket_t sock, const char *host) {
 	return ret;
 }
 
-#if !defined _WIN32 && !defined ANDROID
+#if !defined _WIN32 && !defined ANDROID && !defined __MVS__
 #define USE_IF2IP
 #endif
 
@@ -3237,7 +3248,7 @@ inline bool parse_header(const char *beg, const char *end, T fn) {
 	}
 
 	if (p < end) {
-		fn(std::string(beg, key_end), decode_url(std::string(p, end), false));
+		fn(std::string(beg, key_end), std::string(p, end));
 		return true;
 	}
 
@@ -6077,7 +6088,7 @@ inline bool ClientImpl::redirect(Request &req, Response &res, Error &error) {
 		return false;
 	}
 
-	auto location = detail::decode_url(res.get_header_value("location"), false);
+	auto location = res.get_header_value("location");
 	if (location.empty()) { return false; }
 
 	const static Regex re(

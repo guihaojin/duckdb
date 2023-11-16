@@ -19,12 +19,16 @@ const int Blob::HEX_MAP[256] = {
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 
+bool IsRegularCharacter(data_t c) {
+	return c >= 32 && c <= 126 && c != '\\' && c != '\'' && c != '"';
+}
+
 idx_t Blob::GetStringSize(string_t blob) {
-	auto data = (const_data_ptr_t)blob.GetDataUnsafe();
+	auto data = const_data_ptr_cast(blob.GetData());
 	auto len = blob.GetSize();
 	idx_t str_len = 0;
 	for (idx_t i = 0; i < len; i++) {
-		if (data[i] >= 32 && data[i] <= 127 && data[i] != '\\') {
+		if (IsRegularCharacter(data[i])) {
 			// ascii characters are rendered as-is
 			str_len++;
 		} else {
@@ -36,11 +40,11 @@ idx_t Blob::GetStringSize(string_t blob) {
 }
 
 void Blob::ToString(string_t blob, char *output) {
-	auto data = (const_data_ptr_t)blob.GetDataUnsafe();
+	auto data = const_data_ptr_cast(blob.GetData());
 	auto len = blob.GetSize();
 	idx_t str_idx = 0;
 	for (idx_t i = 0; i < len; i++) {
-		if (data[i] >= 32 && data[i] <= 127 && data[i] != '\\') {
+		if (IsRegularCharacter(data[i])) {
 			// ascii characters are rendered as-is
 			output[str_idx++] = data[i];
 		} else {
@@ -60,13 +64,13 @@ void Blob::ToString(string_t blob, char *output) {
 
 string Blob::ToString(string_t blob) {
 	auto str_len = GetStringSize(blob);
-	auto buffer = std::unique_ptr<char[]>(new char[str_len]);
+	auto buffer = make_unsafe_uniq_array<char>(str_len);
 	Blob::ToString(blob, buffer.get());
 	return string(buffer.get(), str_len);
 }
 
 bool Blob::TryGetBlobSize(string_t str, idx_t &str_len, string *error_message) {
-	auto data = (const_data_ptr_t)str.GetDataUnsafe();
+	auto data = const_data_ptr_cast(str.GetData());
 	auto len = str.GetSize();
 	str_len = 0;
 	for (idx_t i = 0; i < len; i++) {
@@ -80,13 +84,13 @@ bool Blob::TryGetBlobSize(string_t str, idx_t &str_len, string *error_message) {
 			if (data[i + 1] != 'x' || Blob::HEX_MAP[data[i + 2]] < 0 || Blob::HEX_MAP[data[i + 3]] < 0) {
 				string error =
 				    StringUtil::Format("Invalid hex escape code encountered in string -> blob conversion: %s",
-				                       string((char *)data + i, 4));
+				                       string(const_char_ptr_cast(data) + i, 4));
 				HandleCastError::AssignError(error, error_message);
 				return false;
 			}
 			str_len++;
 			i += 3;
-		} else if (data[i] >= 32 && data[i] <= 127) {
+		} else if (data[i] <= 127) {
 			str_len++;
 		} else {
 			string error = "Invalid byte encountered in STRING -> BLOB conversion. All non-ascii characters "
@@ -108,7 +112,7 @@ idx_t Blob::GetBlobSize(string_t str) {
 }
 
 void Blob::ToBlob(string_t str, data_ptr_t output) {
-	auto data = (const_data_ptr_t)str.GetDataUnsafe();
+	auto data = const_data_ptr_cast(str.GetData());
 	auto len = str.GetSize();
 	idx_t blob_idx = 0;
 	for (idx_t i = 0; i < len; i++) {
@@ -120,7 +124,7 @@ void Blob::ToBlob(string_t str, data_ptr_t output) {
 			D_ASSERT(data[i + 1] == 'x');
 			output[blob_idx++] = (byte_a << 4) + byte_b;
 			i += 3;
-		} else if (data[i] >= 32 && data[i] <= 127) {
+		} else if (data[i] <= 127) {
 			output[blob_idx++] = data_t(data[i]);
 		} else {
 			throw ConversionException("Invalid byte encountered in STRING -> BLOB conversion. All non-ascii characters "
@@ -132,8 +136,8 @@ void Blob::ToBlob(string_t str, data_ptr_t output) {
 
 string Blob::ToBlob(string_t str) {
 	auto blob_len = GetBlobSize(str);
-	auto buffer = std::unique_ptr<char[]>(new char[blob_len]);
-	Blob::ToBlob(str, (data_ptr_t)buffer.get());
+	auto buffer = make_unsafe_uniq_array<char>(blob_len);
+	Blob::ToBlob(str, data_ptr_cast(buffer.get()));
 	return string(buffer.get(), blob_len);
 }
 
@@ -145,7 +149,7 @@ idx_t Blob::ToBase64Size(string_t blob) {
 }
 
 void Blob::ToBase64(string_t blob, char *output) {
-	auto input_data = (const_data_ptr_t)blob.GetDataUnsafe();
+	auto input_data = const_data_ptr_cast(blob.GetData());
 	auto input_size = blob.GetSize();
 	idx_t out_idx = 0;
 	idx_t i;
@@ -188,7 +192,7 @@ static constexpr int BASE64_DECODING_TABLE[256] = {
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 
 idx_t Blob::FromBase64Size(string_t str) {
-	auto input_data = str.GetDataUnsafe();
+	auto input_data = str.GetData();
 	auto input_size = str.GetSize();
 	if (input_size % 4 != 0) {
 		// valid base64 needs to always be cleanly divisible by 4
@@ -235,7 +239,7 @@ uint32_t DecodeBase64Bytes(const string_t &str, const_data_ptr_t input_data, idx
 
 void Blob::FromBase64(string_t str, data_ptr_t output, idx_t output_size) {
 	D_ASSERT(output_size == FromBase64Size(str));
-	auto input_data = (const_data_ptr_t)str.GetDataUnsafe();
+	auto input_data = const_data_ptr_cast(str.GetData());
 	auto input_size = str.GetSize();
 	if (input_size == 0) {
 		return;

@@ -1,7 +1,7 @@
 // #define CATCH_CONFIG_RUNNER
 #include "catch.hpp"
 
-#include "duckdb/execution/operator/persistent/buffered_csv_reader.hpp"
+#include "duckdb/execution/operator/scan/csv/buffered_csv_reader.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/value_operations/value_operations.hpp"
 #include "compare_result.hpp"
@@ -9,6 +9,8 @@
 #include "test_helpers.hpp"
 #include "duckdb/parser/parsed_data/copy_info.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "pid.hpp"
+#include "duckdb/function/table/read_csv.hpp"
 
 #include <cmath>
 #include <fstream>
@@ -18,29 +20,38 @@ using namespace std;
 #define TESTING_DIRECTORY_NAME "duckdb_unittest_tempdir"
 
 namespace duckdb {
+static string custom_test_directory;
+static int debug_initialize_value = -1;
+static bool single_threaded = false;
 
 bool NO_FAIL(QueryResult &result) {
-	if (!result.success) {
-		fprintf(stderr, "Query failed with message: %s\n", result.error.c_str());
+	if (result.HasError()) {
+		fprintf(stderr, "Query failed with message: %s\n", result.GetError().c_str());
 	}
-	return result.success;
+	return !result.HasError();
 }
 
-bool NO_FAIL(unique_ptr<QueryResult> result) {
+bool NO_FAIL(duckdb::unique_ptr<QueryResult> result) {
 	return NO_FAIL(*result);
 }
 
 void TestDeleteDirectory(string path) {
-	unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
-	if (fs->DirectoryExists(path)) {
-		fs->RemoveDirectory(path);
+	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+	try {
+		if (fs->DirectoryExists(path)) {
+			fs->RemoveDirectory(path);
+		}
+	} catch (...) {
 	}
 }
 
 void TestDeleteFile(string path) {
-	unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
-	if (fs->FileExists(path)) {
-		fs->RemoveFile(path);
+	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+	try {
+		if (fs->FileExists(path)) {
+			fs->RemoveFile(path);
+		}
+	} catch (...) {
 	}
 }
 
@@ -49,26 +60,63 @@ void TestChangeDirectory(string path) {
 	FileSystem::SetWorkingDirectory(path);
 }
 
+string TestGetCurrentDirectory() {
+	return FileSystem::GetWorkingDirectory();
+}
+
 void DeleteDatabase(string path) {
+	if (!custom_test_directory.empty()) {
+		return;
+	}
 	TestDeleteFile(path);
 	TestDeleteFile(path + ".wal");
 }
 
 void TestCreateDirectory(string path) {
-	unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
 	fs->CreateDirectory(path);
 }
 
-string TestDirectoryPath() {
-	unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
-	if (!fs->DirectoryExists(TESTING_DIRECTORY_NAME)) {
-		fs->CreateDirectory(TESTING_DIRECTORY_NAME);
+void SetTestDirectory(string path) {
+	custom_test_directory = path;
+}
+
+void SetDebugInitialize(int value) {
+	debug_initialize_value = value;
+}
+
+void SetSingleThreaded() {
+	single_threaded = true;
+}
+
+string GetTestDirectory() {
+	if (custom_test_directory.empty()) {
+		return TESTING_DIRECTORY_NAME;
 	}
-	return TESTING_DIRECTORY_NAME;
+	return custom_test_directory;
+}
+
+string TestDirectoryPath() {
+	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+	auto test_directory = GetTestDirectory();
+	if (!fs->DirectoryExists(test_directory)) {
+		fs->CreateDirectory(test_directory);
+	}
+	string path;
+	if (custom_test_directory.empty()) {
+		// add the PID to the test directory - but only if it was not specified explicitly by the user
+		path = StringUtil::Format(test_directory + "/%d", getpid());
+	} else {
+		path = test_directory;
+	}
+	if (!fs->DirectoryExists(path)) {
+		fs->CreateDirectory(path);
+	}
+	return path;
 }
 
 string TestCreatePath(string suffix) {
-	unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
 	return fs->JoinPath(TestDirectoryPath(), suffix);
 }
 
@@ -82,14 +130,34 @@ bool TestIsInternalError(unordered_set<string> &internal_error_messages, const s
 }
 
 unique_ptr<DBConfig> GetTestConfig() {
-	auto result = make_unique<DBConfig>();
+	auto result = make_uniq<DBConfig>();
+#ifndef DUCKDB_ALTERNATIVE_VERIFY
 	result->options.checkpoint_wal_size = 0;
+#else
+	result->options.checkpoint_on_shutdown = false;
+#endif
 	result->options.allow_unsigned_extensions = true;
+	if (single_threaded) {
+		result->options.maximum_threads = 1;
+	}
+	switch (debug_initialize_value) {
+	case -1:
+		break;
+	case 0:
+		result->options.debug_initialize = DebugInitialize::DEBUG_ZERO_INITIALIZE;
+		break;
+	case 0xFF:
+		result->options.debug_initialize = DebugInitialize::DEBUG_ONE_INITIALIZE;
+		break;
+	default:
+		fprintf(stderr, "Invalid value for debug_initialize_value\n");
+		exit(1);
+	}
 	return result;
 }
 
 string GetCSVPath() {
-	unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
 	string csv_path = TestCreatePath("csv_files");
 	if (fs->DirectoryExists(csv_path)) {
 		fs->RemoveDirectory(csv_path);
@@ -116,8 +184,8 @@ bool CHECK_COLUMN(QueryResult &result_, size_t column_number, vector<duckdb::Val
 		return false;
 	}
 	auto &result = (MaterializedQueryResult &)result_;
-	if (!result.success) {
-		fprintf(stderr, "Query failed with message: %s\n", result.error.c_str());
+	if (result.HasError()) {
+		fprintf(stderr, "Query failed with message: %s\n", result.GetError().c_str());
 		return false;
 	}
 	if (result.names.size() != result.types.size()) {
@@ -125,7 +193,7 @@ bool CHECK_COLUMN(QueryResult &result_, size_t column_number, vector<duckdb::Val
 		result.Print();
 		return false;
 	}
-	if (values.size() == 0) {
+	if (values.empty()) {
 		if (result.RowCount() != 0) {
 			result.Print();
 			return false;
@@ -148,7 +216,7 @@ bool CHECK_COLUMN(QueryResult &result_, size_t column_number, vector<duckdb::Val
 			continue;
 		}
 
-		if (!Value::ValuesAreEqual(value, values[row_idx])) {
+		if (!Value::DefaultValuesAreEqual(value, values[row_idx])) {
 			// FAIL("Incorrect result! Got " + vector.GetValue(j).ToString()
 			// +
 			//      " but expected " + values[i + j].ToString());
@@ -159,7 +227,7 @@ bool CHECK_COLUMN(QueryResult &result_, size_t column_number, vector<duckdb::Val
 	return true;
 }
 
-bool CHECK_COLUMN(unique_ptr<duckdb::QueryResult> &result, size_t column_number, vector<duckdb::Value> values) {
+bool CHECK_COLUMN(duckdb::unique_ptr<duckdb::QueryResult> &result, size_t column_number, vector<duckdb::Value> values) {
 	if (result->type == QueryResultType::STREAM_RESULT) {
 		auto &stream = (StreamQueryResult &)*result;
 		result = stream.Materialize();
@@ -167,7 +235,7 @@ bool CHECK_COLUMN(unique_ptr<duckdb::QueryResult> &result, size_t column_number,
 	return CHECK_COLUMN(*result, column_number, values);
 }
 
-bool CHECK_COLUMN(unique_ptr<duckdb::MaterializedQueryResult> &result, size_t column_number,
+bool CHECK_COLUMN(duckdb::unique_ptr<duckdb::MaterializedQueryResult> &result, size_t column_number,
                   vector<duckdb::Value> values) {
 	return CHECK_COLUMN((QueryResult &)*result, column_number, values);
 }
@@ -175,12 +243,20 @@ bool CHECK_COLUMN(unique_ptr<duckdb::MaterializedQueryResult> &result, size_t co
 string compare_csv(duckdb::QueryResult &result, string csv, bool header) {
 	D_ASSERT(result.type == QueryResultType::MATERIALIZED_RESULT);
 	auto &materialized = (MaterializedQueryResult &)result;
-	if (!materialized.success) {
-		fprintf(stderr, "Query failed with message: %s\n", materialized.error.c_str());
-		return materialized.error;
+	if (materialized.HasError()) {
+		fprintf(stderr, "Query failed with message: %s\n", materialized.GetError().c_str());
+		return materialized.GetError();
 	}
 	string error;
 	if (!compare_result(csv, materialized.Collection(), materialized.types, header, error)) {
+		return error;
+	}
+	return "";
+}
+
+string compare_csv_collection(duckdb::ColumnDataCollection &collection, string csv, bool header) {
+	string error;
+	if (!compare_result(csv, collection, collection.Types(), header, error)) {
 		return error;
 	}
 	return "";
@@ -205,7 +281,7 @@ string show_diff(DataChunk &left, DataChunk &right) {
 			for (size_t j = 0; j < left.size(); j++) {
 				auto left_value = left_vector.GetValue(j);
 				auto right_value = right_vector.GetValue(j);
-				if (!Value::ValuesAreEqual(left_value, right_value)) {
+				if (!Value::DefaultValuesAreEqual(left_value, right_value)) {
 					left_column += left_value.ToString() + ",";
 					right_column += right_value.ToString() + ",";
 					has_differences = true;
@@ -241,12 +317,12 @@ bool compare_result(string csv, ColumnDataCollection &collection, vector<Logical
 	f.close();
 
 	// set up the CSV reader
-	BufferedCSVReaderOptions options;
+	CSVReaderOptions options;
 	options.auto_detect = false;
-	options.delimiter = "|";
-	options.header = has_header;
-	options.quote = "\"";
-	options.escape = "\"";
+	options.dialect_options.state_machine_options.delimiter = '|';
+	options.dialect_options.header = has_header;
+	options.dialect_options.state_machine_options.quote = '\"';
+	options.dialect_options.state_machine_options.escape = '\"';
 	options.file_path = csv_path;
 
 	// set up the intermediate result chunk
@@ -255,7 +331,8 @@ bool compare_result(string csv, ColumnDataCollection &collection, vector<Logical
 
 	DuckDB db;
 	Connection con(db);
-	BufferedCSVReader reader(*con.context, move(options), sql_types);
+	BufferedCSVReader reader(*con.context, std::move(options), sql_types);
+	reader.InitializeProjection();
 
 	ColumnDataCollection csv_data_collection(*con.context, sql_types);
 	while (true) {

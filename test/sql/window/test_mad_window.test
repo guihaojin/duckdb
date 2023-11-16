@@ -2,7 +2,8 @@
 # description: Test MAD aggregate as a window function
 # group: [window]
 
-require vector_size 512
+statement ok
+SET default_null_order='nulls_first';
 
 statement ok
 PRAGMA enable_verification
@@ -97,7 +98,7 @@ NULL	NULL	0.333333
 query IIII
 SELECT r % 3 as p, r, n, mad(n) over (partition by r % 3 order by r)
 FROM (SELECT r, CASE r % 2 WHEN 0 THEN r ELSE NULL END AS n FROM mads) nulls
-ORDER BY 1
+ORDER BY 1, 2
 ----
 NULL	NULL	NULL	NULL
 NULL	NULL	NULL	NULL

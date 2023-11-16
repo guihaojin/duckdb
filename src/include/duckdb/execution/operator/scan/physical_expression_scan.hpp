@@ -17,10 +17,13 @@ namespace duckdb {
 //! The PhysicalExpressionScan scans a set of expressions
 class PhysicalExpressionScan : public PhysicalOperator {
 public:
+	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::EXPRESSION_SCAN;
+
+public:
 	PhysicalExpressionScan(vector<LogicalType> types, vector<vector<unique_ptr<Expression>>> expressions,
 	                       idx_t estimated_cardinality)
-	    : PhysicalOperator(PhysicalOperatorType::EXPRESSION_SCAN, move(types), estimated_cardinality),
-	      expressions(move(expressions)) {
+	    : PhysicalOperator(PhysicalOperatorType::EXPRESSION_SCAN, std::move(types), estimated_cardinality),
+	      expressions(std::move(expressions)) {
 	}
 
 	//! The set of expressions to scan
@@ -37,7 +40,7 @@ public:
 
 public:
 	bool IsFoldable() const;
-	void EvaluateExpression(Allocator &allocator, idx_t expression_idx, DataChunk *child_chunk,
+	void EvaluateExpression(ClientContext &context, idx_t expression_idx, DataChunk *child_chunk,
 	                        DataChunk &result) const;
 };
 

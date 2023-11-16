@@ -2,6 +2,9 @@
 # description: Test Bool operator
 # group: [aggregates]
 
+statement ok
+SET default_null_order='nulls_first';
+
 # Corner Cases
 statement error
 select bool_or(0)
@@ -68,15 +71,14 @@ query III
 select d,bool_or(d > '2021-02-09') AS or_result,
        bool_and(d > '2021-02-09') AS and_result
 from t
-group by d;
+group by d
+order by d;
 ----
 NULL	NULL	NULL
 2021-02-08	0	0
 2021-02-10	1	1
 
 # Window Function
-require vector_size 512
-
 query I
 select bool_or(d > '2021-02-09') over (partition by d)
     from t order by d;

@@ -10,6 +10,7 @@
 
 #include "duckdb/common/common.hpp"
 #include "duckdb/parser/constraint.hpp"
+#include "duckdb/common/exception.hpp"
 
 namespace duckdb {
 //! Bound equivalent of Constraint
@@ -20,5 +21,22 @@ public:
 	}
 
 	ConstraintType type;
+
+public:
+	template <class TARGET>
+	TARGET &Cast() {
+		if (type != TARGET::TYPE) {
+			throw InternalException("Failed to cast constraint to type - bound constraint type mismatch");
+		}
+		return reinterpret_cast<TARGET &>(*this);
+	}
+
+	template <class TARGET>
+	const TARGET &Cast() const {
+		if (type != TARGET::TYPE) {
+			throw InternalException("Failed to cast constraint to type - bound constraint type mismatch");
+		}
+		return reinterpret_cast<const TARGET &>(*this);
+	}
 };
 } // namespace duckdb

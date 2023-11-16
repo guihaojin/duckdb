@@ -8,16 +8,16 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/main/client_context.hpp"
-#include "duckdb/parallel/event.hpp"
+#include "duckdb/parallel/base_pipeline_event.hpp"
 #include "duckdb/parallel/thread_context.hpp"
 
 #include <thread>
 
 namespace duckdb {
 
-PhysicalRangeJoin::LocalSortedTable::LocalSortedTable(Allocator &allocator, const PhysicalRangeJoin &op,
+PhysicalRangeJoin::LocalSortedTable::LocalSortedTable(ClientContext &context, const PhysicalRangeJoin &op,
                                                       const idx_t child)
-    : op(op), executor(allocator), has_null(0), count(0) {
+    : op(op), executor(context), has_null(0), count(0) {
 	// Initialize order clause expression executor and key DataChunk
 	vector<LogicalType> types;
 	for (const auto &cond : op.conditions) {
@@ -26,6 +26,7 @@ PhysicalRangeJoin::LocalSortedTable::LocalSortedTable(Allocator &allocator, cons
 
 		types.push_back(expr->return_type);
 	}
+	auto &allocator = Allocator::Get(context);
 	keys.Initialize(allocator, types);
 }
 
@@ -45,7 +46,7 @@ void PhysicalRangeJoin::LocalSortedTable::Sink(DataChunk &input, GlobalSortState
 
 	//	Only sort the primary key
 	DataChunk join_head;
-	join_head.data.emplace_back(Vector(keys.data[0]));
+	join_head.data.emplace_back(keys.data[0]);
 	join_head.SetCardinality(keys.size());
 
 	// Sink the data into the local sort state
@@ -58,7 +59,7 @@ PhysicalRangeJoin::GlobalSortedTable::GlobalSortedTable(ClientContext &context, 
       memory_per_thread(0) {
 	D_ASSERT(orders.size() == 1);
 
-	// Set external (can be force with the PRAGMA)
+	// Set external (can be forced with the PRAGMA)
 	auto &config = ClientConfig::GetConfig(context);
 	global_sort_state.external = config.force_external;
 	memory_per_thread = PhysicalRangeJoin::GetMaxThreadMemory(context);
@@ -71,7 +72,7 @@ void PhysicalRangeJoin::GlobalSortedTable::Combine(LocalSortedTable &ltable) {
 }
 
 void PhysicalRangeJoin::GlobalSortedTable::IntializeMatches() {
-	found_match = unique_ptr<bool[]>(new bool[Count()]);
+	found_match = make_unsafe_uniq_array<bool>(Count());
 	memset(found_match.get(), 0, sizeof(bool) * Count());
 }
 
@@ -85,7 +86,7 @@ public:
 
 public:
 	RangeJoinMergeTask(shared_ptr<Event> event_p, ClientContext &context, GlobalSortedTable &table)
-	    : ExecutorTask(context), event(move(event_p)), context(context), table(table) {
+	    : ExecutorTask(context), event(std::move(event_p)), context(context), table(table) {
 	}
 
 	TaskExecutionResult ExecuteTask(TaskExecutionMode mode) override {
@@ -104,31 +105,30 @@ private:
 	GlobalSortedTable &table;
 };
 
-class RangeJoinMergeEvent : public Event {
+class RangeJoinMergeEvent : public BasePipelineEvent {
 public:
 	using GlobalSortedTable = PhysicalRangeJoin::GlobalSortedTable;
 
 public:
 	RangeJoinMergeEvent(GlobalSortedTable &table_p, Pipeline &pipeline_p)
-	    : Event(pipeline_p.executor), table(table_p), pipeline(pipeline_p) {
+	    : BasePipelineEvent(pipeline_p), table(table_p) {
 	}
 
 	GlobalSortedTable &table;
-	Pipeline &pipeline;
 
 public:
 	void Schedule() override {
-		auto &context = pipeline.GetClientContext();
+		auto &context = pipeline->GetClientContext();
 
 		// Schedule tasks equal to the number of threads, which will each merge multiple partitions
 		auto &ts = TaskScheduler::GetScheduler(context);
 		idx_t num_threads = ts.NumberOfThreads();
 
-		vector<unique_ptr<Task>> iejoin_tasks;
+		vector<shared_ptr<Task>> iejoin_tasks;
 		for (idx_t tnum = 0; tnum < num_threads; tnum++) {
-			iejoin_tasks.push_back(make_unique<RangeJoinMergeTask>(shared_from_this(), context, table));
+			iejoin_tasks.push_back(make_uniq<RangeJoinMergeTask>(shared_from_this(), context, table));
 		}
-		SetTasks(move(iejoin_tasks));
+		SetTasks(std::move(iejoin_tasks));
 	}
 
 	void FinishEvent() override {
@@ -137,7 +137,7 @@ public:
 		global_sort_state.CompleteMergeRound(true);
 		if (global_sort_state.sorted_blocks.size() > 1) {
 			// Multiple blocks remaining: Schedule the next round
-			table.ScheduleMergeTasks(pipeline, *this);
+			table.ScheduleMergeTasks(*pipeline, *this);
 		}
 	}
 };
@@ -146,7 +146,7 @@ void PhysicalRangeJoin::GlobalSortedTable::ScheduleMergeTasks(Pipeline &pipeline
 	// Initialize global sort state for a round of merging
 	global_sort_state.InitializeMergeRound();
 	auto new_event = make_shared<RangeJoinMergeEvent>(*this, pipeline);
-	event.InsertEvent(move(new_event));
+	event.InsertEvent(std::move(new_event));
 }
 
 void PhysicalRangeJoin::GlobalSortedTable::Finalize(Pipeline &pipeline, Event &event) {
@@ -159,16 +159,16 @@ void PhysicalRangeJoin::GlobalSortedTable::Finalize(Pipeline &pipeline, Event &e
 	}
 }
 
-PhysicalRangeJoin::PhysicalRangeJoin(LogicalOperator &op, PhysicalOperatorType type, unique_ptr<PhysicalOperator> left,
-                                     unique_ptr<PhysicalOperator> right, vector<JoinCondition> cond, JoinType join_type,
-                                     idx_t estimated_cardinality)
-    : PhysicalComparisonJoin(op, type, move(cond), join_type, estimated_cardinality) {
+PhysicalRangeJoin::PhysicalRangeJoin(LogicalComparisonJoin &op, PhysicalOperatorType type,
+                                     unique_ptr<PhysicalOperator> left, unique_ptr<PhysicalOperator> right,
+                                     vector<JoinCondition> cond, JoinType join_type, idx_t estimated_cardinality)
+    : PhysicalComparisonJoin(op, type, std::move(cond), join_type, estimated_cardinality) {
 	// Reorder the conditions so that ranges are at the front.
 	// TODO: use stats to improve the choice?
 	// TODO: Prefer fixed length types?
 	if (conditions.size() > 1) {
-		auto conditions_p = std::move(conditions);
-		conditions.resize(conditions_p.size());
+		vector<JoinCondition> conditions_p(conditions.size());
+		std::swap(conditions_p, conditions);
 		idx_t range_position = 0;
 		idx_t other_position = conditions_p.size();
 		for (idx_t i = 0; i < conditions_p.size(); ++i) {
@@ -186,8 +186,32 @@ PhysicalRangeJoin::PhysicalRangeJoin(LogicalOperator &op, PhysicalOperatorType t
 		}
 	}
 
-	children.push_back(move(left));
-	children.push_back(move(right));
+	children.push_back(std::move(left));
+	children.push_back(std::move(right));
+
+	//	Fill out the left projection map.
+	left_projection_map = op.left_projection_map;
+	if (left_projection_map.empty()) {
+		const auto left_count = children[0]->types.size();
+		left_projection_map.reserve(left_count);
+		for (column_t i = 0; i < left_count; ++i) {
+			left_projection_map.emplace_back(i);
+		}
+	}
+	//	Fill out the right projection map.
+	right_projection_map = op.right_projection_map;
+	if (right_projection_map.empty()) {
+		const auto right_count = children[1]->types.size();
+		right_projection_map.reserve(right_count);
+		for (column_t i = 0; i < right_count; ++i) {
+			right_projection_map.emplace_back(i);
+		}
+	}
+
+	//	Construct the unprojected type layout from the children's types
+	unprojected_types = children[0]->GetTypes();
+	auto &types = children[1]->GetTypes();
+	unprojected_types.insert(unprojected_types.end(), types.begin(), types.end());
 }
 
 idx_t PhysicalRangeJoin::LocalSortedTable::MergeNulls(const vector<JoinCondition> &conditions) {
@@ -266,9 +290,21 @@ idx_t PhysicalRangeJoin::LocalSortedTable::MergeNulls(const vector<JoinCondition
 	}
 }
 
-void PhysicalRangeJoin::SliceSortedPayload(DataChunk &payload, GlobalSortState &state, const idx_t block_idx,
-                                           const SelectionVector &result, const idx_t result_count,
-                                           const idx_t left_cols) {
+void PhysicalRangeJoin::ProjectResult(DataChunk &chunk, DataChunk &result) const {
+	const auto left_projected = left_projection_map.size();
+	for (idx_t i = 0; i < left_projected; ++i) {
+		result.data[i].Reference(chunk.data[left_projection_map[i]]);
+	}
+	const auto left_width = children[0]->types.size();
+	for (idx_t i = 0; i < right_projection_map.size(); ++i) {
+		result.data[left_projected + i].Reference(chunk.data[left_width + right_projection_map[i]]);
+	}
+	result.SetCardinality(chunk);
+}
+
+BufferHandle PhysicalRangeJoin::SliceSortedPayload(DataChunk &payload, GlobalSortState &state, const idx_t block_idx,
+                                                   const SelectionVector &result, const idx_t result_count,
+                                                   const idx_t left_cols) {
 	// There should only be one sorted block if they have been sorted
 	D_ASSERT(state.sorted_blocks.size() == 1);
 	SBScanState read_state(state.buffer_manager, state);
@@ -278,6 +314,7 @@ void PhysicalRangeJoin::SliceSortedPayload(DataChunk &payload, GlobalSortState &
 	read_state.SetIndices(block_idx, 0);
 	read_state.PinData(sorted_data);
 	const auto data_ptr = read_state.DataPtr(sorted_data);
+	data_ptr_t heap_ptr = nullptr;
 
 	// Set up a batch of pointers to scan data from
 	Vector addresses(LogicalType::POINTER, result_count);
@@ -303,18 +340,18 @@ void PhysicalRangeJoin::SliceSortedPayload(DataChunk &payload, GlobalSortState &
 
 	// Unswizzle the offsets back to pointers (if needed)
 	if (!sorted_data.layout.AllConstant() && state.external) {
-		RowOperations::UnswizzlePointers(sorted_data.layout, data_ptr, read_state.payload_heap_handle.Ptr(),
-		                                 addr_count);
+		heap_ptr = read_state.payload_heap_handle.Ptr();
 	}
 
 	// Deserialize the payload data
 	auto sel = FlatVector::IncrementalSelectionVector();
-	for (idx_t col_idx = 0; col_idx < sorted_data.layout.ColumnCount(); col_idx++) {
-		const auto col_offset = sorted_data.layout.GetOffsets()[col_idx];
-		auto &col = payload.data[left_cols + col_idx];
-		RowOperations::Gather(addresses, *sel, col, *sel, addr_count, col_offset, col_idx);
+	for (idx_t col_no = 0; col_no < sorted_data.layout.ColumnCount(); col_no++) {
+		auto &col = payload.data[left_cols + col_no];
+		RowOperations::Gather(addresses, *sel, col, *sel, addr_count, sorted_data.layout, col_no, 0, heap_ptr);
 		col.Slice(gsel, result_count);
 	}
+
+	return std::move(read_state.payload_heap_handle);
 }
 
 idx_t PhysicalRangeJoin::SelectJoinTail(const ExpressionType &condition, Vector &left, Vector &right,
@@ -333,7 +370,9 @@ idx_t PhysicalRangeJoin::SelectJoinTail(const ExpressionType &condition, Vector 
 	case ExpressionType::COMPARE_DISTINCT_FROM:
 		return VectorOperations::DistinctFrom(left, right, sel, count, true_sel, nullptr);
 	case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
+		return VectorOperations::NotDistinctFrom(left, right, sel, count, true_sel, nullptr);
 	case ExpressionType::COMPARE_EQUAL:
+		return VectorOperations::Equals(left, right, sel, count, true_sel, nullptr);
 	default:
 		throw InternalException("Unsupported comparison type for PhysicalRangeJoin");
 	}

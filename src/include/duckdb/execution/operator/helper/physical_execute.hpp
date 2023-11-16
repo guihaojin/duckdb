@@ -15,17 +15,20 @@ namespace duckdb {
 
 class PhysicalExecute : public PhysicalOperator {
 public:
-	explicit PhysicalExecute(PhysicalOperator *plan);
+	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::EXECUTE;
 
-	PhysicalOperator *plan;
+public:
+	explicit PhysicalExecute(PhysicalOperator &plan);
+
+	PhysicalOperator &plan;
 	unique_ptr<PhysicalOperator> owned_plan;
 	shared_ptr<PreparedStatementData> prepared;
 
 public:
-	vector<PhysicalOperator *> GetChildren() const override;
+	vector<const_reference<PhysicalOperator>> GetChildren() const override;
 
 public:
-	void BuildPipelines(Executor &executor, Pipeline &current, PipelineBuildState &state) override;
+	void BuildPipelines(Pipeline &current, MetaPipeline &meta_pipeline) override;
 };
 
 } // namespace duckdb

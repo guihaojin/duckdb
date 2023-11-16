@@ -1,5 +1,6 @@
 #include "duckdb/execution/operator/join/physical_cross_product.hpp"
-#include "duckdb/common/types/column_data_collection.hpp"
+
+#include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/operator/join/physical_join.hpp"
 
@@ -7,9 +8,9 @@ namespace duckdb {
 
 PhysicalCrossProduct::PhysicalCrossProduct(vector<LogicalType> types, unique_ptr<PhysicalOperator> left,
                                            unique_ptr<PhysicalOperator> right, idx_t estimated_cardinality)
-    : PhysicalOperator(PhysicalOperatorType::CROSS_PRODUCT, move(types), estimated_cardinality) {
-	children.push_back(move(left));
-	children.push_back(move(right));
+    : CachingPhysicalOperator(PhysicalOperatorType::CROSS_PRODUCT, std::move(types), estimated_cardinality) {
+	children.push_back(std::move(left));
+	children.push_back(std::move(right));
 }
 
 //===--------------------------------------------------------------------===//
@@ -28,14 +29,13 @@ public:
 };
 
 unique_ptr<GlobalSinkState> PhysicalCrossProduct::GetGlobalSinkState(ClientContext &context) const {
-	return make_unique<CrossProductGlobalState>(context, *this);
+	return make_uniq<CrossProductGlobalState>(context, *this);
 }
 
-SinkResultType PhysicalCrossProduct::Sink(ExecutionContext &context, GlobalSinkState &state, LocalSinkState &lstate_p,
-                                          DataChunk &input) const {
-	auto &sink = (CrossProductGlobalState &)state;
+SinkResultType PhysicalCrossProduct::Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const {
+	auto &sink = input.global_state.Cast<CrossProductGlobalState>();
 	lock_guard<mutex> client_guard(sink.rhs_lock);
-	sink.rhs_materialized.Append(sink.append_state, input);
+	sink.rhs_materialized.Append(sink.append_state, chunk);
 	return SinkResultType::NEED_MORE_INPUT;
 }
 
@@ -113,7 +113,7 @@ OperatorResultType CrossProductExecutor::Execute(DataChunk &input, DataChunk &ou
 	return OperatorResultType::HAVE_MORE_OUTPUT;
 }
 
-class CrossProductOperatorState : public OperatorState {
+class CrossProductOperatorState : public CachingOperatorState {
 public:
 	explicit CrossProductOperatorState(ColumnDataCollection &rhs) : executor(rhs) {
 	}
@@ -122,24 +122,24 @@ public:
 };
 
 unique_ptr<OperatorState> PhysicalCrossProduct::GetOperatorState(ExecutionContext &context) const {
-	auto &sink = (CrossProductGlobalState &)*sink_state;
-	return make_unique<CrossProductOperatorState>(sink.rhs_materialized);
+	auto &sink = sink_state->Cast<CrossProductGlobalState>();
+	return make_uniq<CrossProductOperatorState>(sink.rhs_materialized);
 }
 
-OperatorResultType PhysicalCrossProduct::Execute(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
-                                                 GlobalOperatorState &gstate, OperatorState &state_p) const {
-	auto &state = (CrossProductOperatorState &)state_p;
+OperatorResultType PhysicalCrossProduct::ExecuteInternal(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
+                                                         GlobalOperatorState &gstate, OperatorState &state_p) const {
+	auto &state = state_p.Cast<CrossProductOperatorState>();
 	return state.executor.Execute(input, chunk);
 }
 
 //===--------------------------------------------------------------------===//
 // Pipeline Construction
 //===--------------------------------------------------------------------===//
-void PhysicalCrossProduct::BuildPipelines(Executor &executor, Pipeline &current, PipelineBuildState &state) {
-	PhysicalJoin::BuildJoinPipelines(executor, current, state, *this);
+void PhysicalCrossProduct::BuildPipelines(Pipeline &current, MetaPipeline &meta_pipeline) {
+	PhysicalJoin::BuildJoinPipelines(current, meta_pipeline, *this);
 }
 
-vector<const PhysicalOperator *> PhysicalCrossProduct::GetSources() const {
+vector<const_reference<PhysicalOperator>> PhysicalCrossProduct::GetSources() const {
 	return children[0]->GetSources();
 }
 

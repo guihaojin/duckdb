@@ -6,29 +6,77 @@ namespace duckdb {
 
 template <class T, class OP>
 static void TemplatedMarkJoin(Vector &left, Vector &right, idx_t lcount, idx_t rcount, bool found_match[]) {
+	using MATCH_OP = ComparisonOperationWrapper<OP>;
+
 	UnifiedVectorFormat left_data, right_data;
 	left.ToUnifiedFormat(lcount, left_data);
 	right.ToUnifiedFormat(rcount, right_data);
 
-	auto ldata = (T *)left_data.data;
-	auto rdata = (T *)right_data.data;
+	auto ldata = UnifiedVectorFormat::GetData<T>(left_data);
+	auto rdata = UnifiedVectorFormat::GetData<T>(right_data);
 	for (idx_t i = 0; i < lcount; i++) {
 		if (found_match[i]) {
 			continue;
 		}
 		auto lidx = left_data.sel->get_index(i);
-		if (!left_data.validity.RowIsValid(lidx)) {
+		const auto left_null = !left_data.validity.RowIsValid(lidx);
+		if (!MATCH_OP::COMPARE_NULL && left_null) {
 			continue;
 		}
 		for (idx_t j = 0; j < rcount; j++) {
 			auto ridx = right_data.sel->get_index(j);
-			if (!right_data.validity.RowIsValid(ridx)) {
+			const auto right_null = !right_data.validity.RowIsValid(ridx);
+			if (!MATCH_OP::COMPARE_NULL && right_null) {
 				continue;
 			}
-			if (OP::Operation(ldata[lidx], rdata[ridx])) {
+			if (MATCH_OP::template Operation<T>(ldata[lidx], rdata[ridx], left_null, right_null)) {
 				found_match[i] = true;
 				break;
 			}
+		}
+	}
+}
+
+static void MarkJoinNested(Vector &left, Vector &right, idx_t lcount, idx_t rcount, bool found_match[],
+                           ExpressionType comparison_type) {
+	Vector left_reference(left.GetType());
+	SelectionVector true_sel(rcount);
+	for (idx_t i = 0; i < lcount; i++) {
+		if (found_match[i]) {
+			continue;
+		}
+		ConstantVector::Reference(left_reference, left, i, rcount);
+		idx_t count;
+		switch (comparison_type) {
+		case ExpressionType::COMPARE_EQUAL:
+			count = VectorOperations::Equals(left_reference, right, nullptr, rcount, nullptr, nullptr);
+			break;
+		case ExpressionType::COMPARE_NOTEQUAL:
+			count = VectorOperations::NotEquals(left_reference, right, nullptr, rcount, nullptr, nullptr);
+			break;
+		case ExpressionType::COMPARE_LESSTHAN:
+			count = VectorOperations::LessThan(left_reference, right, nullptr, rcount, nullptr, nullptr);
+			break;
+		case ExpressionType::COMPARE_GREATERTHAN:
+			count = VectorOperations::GreaterThan(left_reference, right, nullptr, rcount, nullptr, nullptr);
+			break;
+		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+			count = VectorOperations::LessThanEquals(left_reference, right, nullptr, rcount, nullptr, nullptr);
+			break;
+		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+			count = VectorOperations::GreaterThanEquals(left_reference, right, nullptr, rcount, nullptr, nullptr);
+			break;
+		case ExpressionType::COMPARE_DISTINCT_FROM:
+			count = VectorOperations::DistinctFrom(left_reference, right, nullptr, rcount, nullptr, nullptr);
+			break;
+		case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
+			count = VectorOperations::NotDistinctFrom(left_reference, right, nullptr, rcount, nullptr, nullptr);
+			break;
+		default:
+			throw InternalException("Unsupported comparison type for MarkJoinNested");
+		}
+		if (count > 0) {
+			found_match[i] = true;
 		}
 	}
 }
@@ -68,20 +116,29 @@ static void MarkJoinSwitch(Vector &left, Vector &right, idx_t lcount, idx_t rcou
 
 static void MarkJoinComparisonSwitch(Vector &left, Vector &right, idx_t lcount, idx_t rcount, bool found_match[],
                                      ExpressionType comparison_type) {
+	switch (left.GetType().InternalType()) {
+	case PhysicalType::STRUCT:
+	case PhysicalType::LIST:
+		return MarkJoinNested(left, right, lcount, rcount, found_match, comparison_type);
+	default:
+		break;
+	}
 	D_ASSERT(left.GetType() == right.GetType());
 	switch (comparison_type) {
 	case ExpressionType::COMPARE_EQUAL:
-		return MarkJoinSwitch<duckdb::Equals>(left, right, lcount, rcount, found_match);
+		return MarkJoinSwitch<Equals>(left, right, lcount, rcount, found_match);
 	case ExpressionType::COMPARE_NOTEQUAL:
-		return MarkJoinSwitch<duckdb::NotEquals>(left, right, lcount, rcount, found_match);
+		return MarkJoinSwitch<NotEquals>(left, right, lcount, rcount, found_match);
 	case ExpressionType::COMPARE_LESSTHAN:
-		return MarkJoinSwitch<duckdb::LessThan>(left, right, lcount, rcount, found_match);
+		return MarkJoinSwitch<LessThan>(left, right, lcount, rcount, found_match);
 	case ExpressionType::COMPARE_GREATERTHAN:
-		return MarkJoinSwitch<duckdb::GreaterThan>(left, right, lcount, rcount, found_match);
+		return MarkJoinSwitch<GreaterThan>(left, right, lcount, rcount, found_match);
 	case ExpressionType::COMPARE_LESSTHANOREQUALTO:
-		return MarkJoinSwitch<duckdb::LessThanEquals>(left, right, lcount, rcount, found_match);
+		return MarkJoinSwitch<LessThanEquals>(left, right, lcount, rcount, found_match);
 	case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
-		return MarkJoinSwitch<duckdb::GreaterThanEquals>(left, right, lcount, rcount, found_match);
+		return MarkJoinSwitch<GreaterThanEquals>(left, right, lcount, rcount, found_match);
+	case ExpressionType::COMPARE_DISTINCT_FROM:
+		return MarkJoinSwitch<DistinctFrom>(left, right, lcount, rcount, found_match);
 	default:
 		throw NotImplementedException("Unimplemented comparison type for join!");
 	}

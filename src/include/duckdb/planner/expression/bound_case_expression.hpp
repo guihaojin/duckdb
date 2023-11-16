@@ -15,9 +15,15 @@ namespace duckdb {
 struct BoundCaseCheck {
 	unique_ptr<Expression> when_expr;
 	unique_ptr<Expression> then_expr;
+
+	void Serialize(Serializer &serializer) const;
+	static BoundCaseCheck Deserialize(Deserializer &deserializer);
 };
 
 class BoundCaseExpression : public Expression {
+public:
+	static constexpr const ExpressionClass TYPE = ExpressionClass::BOUND_CASE;
+
 public:
 	BoundCaseExpression(LogicalType type);
 	BoundCaseExpression(unique_ptr<Expression> when_expr, unique_ptr<Expression> then_expr,
@@ -29,8 +35,11 @@ public:
 public:
 	string ToString() const override;
 
-	bool Equals(const BaseExpression *other) const override;
+	bool Equals(const BaseExpression &other) const override;
 
 	unique_ptr<Expression> Copy() override;
+
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<Expression> Deserialize(Deserializer &deserializer);
 };
 } // namespace duckdb

@@ -27,7 +27,7 @@ enum class TableFilterType : uint8_t {
 //! TableFilter represents a filter pushed down into the table scan.
 class TableFilter {
 public:
-	TableFilter(TableFilterType filter_type_p) : filter_type(filter_type_p) {
+	explicit TableFilter(TableFilterType filter_type_p) : filter_type(filter_type_p) {
 	}
 	virtual ~TableFilter() {
 	}
@@ -40,6 +40,26 @@ public:
 	virtual string ToString(const string &column_name) = 0;
 	virtual bool Equals(const TableFilter &other) const {
 		return filter_type != other.filter_type;
+	}
+
+	virtual void Serialize(Serializer &serializer) const;
+	static unique_ptr<TableFilter> Deserialize(Deserializer &deserializer);
+
+public:
+	template <class TARGET>
+	TARGET &Cast() {
+		if (filter_type != TARGET::TYPE) {
+			throw InternalException("Failed to cast table to type - table filter type mismatch");
+		}
+		return reinterpret_cast<TARGET &>(*this);
+	}
+
+	template <class TARGET>
+	const TARGET &Cast() const {
+		if (filter_type != TARGET::TYPE) {
+			throw InternalException("Failed to cast table to type - table filter type mismatch");
+		}
+		return reinterpret_cast<const TARGET &>(*this);
 	}
 };
 
@@ -74,6 +94,9 @@ public:
 		}
 		return left->Equals(*right);
 	}
+
+	void Serialize(Serializer &serializer) const;
+	static TableFilterSet Deserialize(Deserializer &deserializer);
 };
 
 } // namespace duckdb

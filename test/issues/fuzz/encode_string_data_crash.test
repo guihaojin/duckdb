@@ -2,8 +2,6 @@
 # description: Issue #3350: SEGV in duckdb::EncodeStringDataPrefix
 # group: [fuzz]
 
-require vector_size 512
-
 statement ok
 PRAGMA enable_verification
 
@@ -26,7 +24,8 @@ SELECT sum(a) OVER (
     PARTITION BY (
 SELECT c FROM id WHERE strings_with_null=a
     ) ORDER BY a
-  ) FROM strings;
+  ) FROM strings
+ORDER BY 1
 ----
 10
 30

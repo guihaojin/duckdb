@@ -1,16 +1,15 @@
 cmake_minimum_required(VERSION 2.8.12)
 
-project(EXCELExtension)
+project(ExcelExtension)
 
 include_directories(numformat/include)
 include_directories(include)
 add_subdirectory(numformat)
 
-add_library(excel_extension STATIC excel-extension.cpp
-                                   ${NUMFORMAT_OBJECT_FILES})
-set(INGORE_WARNINGS OFF)
-build_loadable_extension(excel excel-extension.cpp ${NUMFORMAT_OBJECT_FILES}
-                         ${IGNORE_WARNINGS})
+build_static_extension(excel excel_extension.cpp ${NUMFORMAT_OBJECT_FILES})
+set(PARAMETERS "-warnings")
+build_loadable_extension(excel ${PARAMETERS} excel_extension.cpp
+                         ${NUMFORMAT_OBJECT_FILES})
 
 install(
   TARGETS excel_extension

@@ -33,7 +33,7 @@ public:
 			}
 			while (true) {
 				auto result = con.Query(FORCE_CHECKPOINT ? "FORCE CHECKPOINT" : "CHECKPOINT");
-				if (result->success) {
+				if (!result->HasError()) {
 					break;
 				}
 			}
@@ -54,29 +54,29 @@ public:
 		for (size_t i = 0; i < CONCURRENT_UPDATE_TRANSACTION_UPDATE_COUNT; i++) {
 			// just make some changes to the total
 			// the total amount of money after the commit is the same
-			if (!con.Query("BEGIN TRANSACTION")->success) {
+			if (con.Query("BEGIN TRANSACTION")->HasError()) {
 				correct[nr] = false;
 			}
-			if (!con.Query("UPDATE accounts SET money = money + " + to_string(i * 2) + " WHERE id = " + to_string(nr))
-			         ->success) {
+			if (con.Query("UPDATE accounts SET money = money + " + to_string(i * 2) + " WHERE id = " + to_string(nr))
+			        ->HasError()) {
 				correct[nr] = false;
 			}
-			if (!con.Query("UPDATE accounts SET money = money - " + to_string(i) + " WHERE id = " + to_string(nr))
-			         ->success) {
+			if (con.Query("UPDATE accounts SET money = money - " + to_string(i) + " WHERE id = " + to_string(nr))
+			        ->HasError()) {
 				correct[nr] = false;
 			}
-			if (!con.Query("UPDATE accounts SET money = money - " + to_string(i * 2) + " WHERE id = " + to_string(nr))
-			         ->success) {
+			if (con.Query("UPDATE accounts SET money = money - " + to_string(i * 2) + " WHERE id = " + to_string(nr))
+			        ->HasError()) {
 				correct[nr] = false;
 			}
-			if (!con.Query("UPDATE accounts SET money = money + " + to_string(i) + " WHERE id = " + to_string(nr))
-			         ->success) {
+			if (con.Query("UPDATE accounts SET money = money + " + to_string(i) + " WHERE id = " + to_string(nr))
+			        ->HasError()) {
 				correct[nr] = false;
 			}
 			// we test both commit and rollback
 			// the result of both should be the same since the updates have a
 			// net-zero effect
-			if (!con.Query(nr % 2 == 0 ? "COMMIT" : "ROLLBACK")->success) {
+			if (con.Query(nr % 2 == 0 ? "COMMIT" : "ROLLBACK")->HasError()) {
 				correct[nr] = false;
 			}
 		}
@@ -107,7 +107,7 @@ TEST_CASE("Concurrent checkpoint with single updater", "[interquery][.]") {
 	auto config = GetTestConfig();
 	auto storage_database = TestCreatePath("concurrent_checkpoint");
 	DeleteDatabase(storage_database);
-	unique_ptr<MaterializedQueryResult> result;
+	duckdb::unique_ptr<MaterializedQueryResult> result;
 	DuckDB db(storage_database, config.get());
 	Connection con(db);
 
@@ -185,7 +185,7 @@ TEST_CASE("Concurrent checkpoint with multiple updaters", "[interquery][.]") {
 	auto config = GetTestConfig();
 	auto storage_database = TestCreatePath("concurrent_checkpoint");
 	DeleteDatabase(storage_database);
-	unique_ptr<MaterializedQueryResult> result;
+	duckdb::unique_ptr<MaterializedQueryResult> result;
 	DuckDB db(storage_database, config.get());
 	Connection con(db);
 
@@ -226,7 +226,7 @@ TEST_CASE("Force concurrent checkpoint with single updater", "[interquery][.]") 
 	auto config = GetTestConfig();
 	auto storage_database = TestCreatePath("concurrent_checkpoint");
 	DeleteDatabase(storage_database);
-	unique_ptr<MaterializedQueryResult> result;
+	duckdb::unique_ptr<MaterializedQueryResult> result;
 	DuckDB db(storage_database, config.get());
 	Connection con(db);
 
@@ -267,7 +267,7 @@ TEST_CASE("Concurrent commits on persistent database with automatic checkpoints"
 	auto config = GetTestConfig();
 	auto storage_database = TestCreatePath("concurrent_checkpoint");
 	DeleteDatabase(storage_database);
-	unique_ptr<MaterializedQueryResult> result;
+	duckdb::unique_ptr<MaterializedQueryResult> result;
 	config->options.checkpoint_wal_size = 1;
 	DuckDB db(storage_database, config.get());
 	Connection con(db);

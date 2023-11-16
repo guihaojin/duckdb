@@ -9,15 +9,17 @@
 #pragma once
 
 #include "duckdb/common/serializer/buffered_file_writer.hpp"
+#include "duckdb/common/serializer/read_stream.hpp"
 
 namespace duckdb {
 
-class BufferedFileReader : public Deserializer {
+class BufferedFileReader : public ReadStream {
 public:
-	BufferedFileReader(FileSystem &fs, const char *path, FileOpener *opener = nullptr);
+	BufferedFileReader(FileSystem &fs, const char *path, FileLockType lock_type = FileLockType::READ_LOCK,
+	                   optional_ptr<FileOpener> opener = nullptr);
 
 	FileSystem &fs;
-	unique_ptr<data_t[]> data;
+	unsafe_unique_array<data_t> data;
 	idx_t offset;
 	idx_t read_data;
 	unique_ptr<FileHandle> handle;
@@ -30,6 +32,9 @@ public:
 	idx_t FileSize() {
 		return file_size;
 	}
+
+	void Seek(uint64_t location);
+	uint64_t CurrentOffset();
 
 private:
 	idx_t file_size;

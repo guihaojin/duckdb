@@ -12,15 +12,15 @@ ExecuteFunctionState::~ExecuteFunctionState() {
 
 unique_ptr<ExpressionState> ExpressionExecutor::InitializeState(const BoundFunctionExpression &expr,
                                                                 ExpressionExecutorState &root) {
-	auto result = make_unique<ExecuteFunctionState>(expr, root);
+	auto result = make_uniq<ExecuteFunctionState>(expr, root);
 	for (auto &child : expr.children) {
 		result->AddChild(child.get());
 	}
 	result->Finalize();
 	if (expr.function.init_local_state) {
-		result->local_state = expr.function.init_local_state(expr, expr.bind_info.get());
+		result->local_state = expr.function.init_local_state(*result, expr, expr.bind_info.get());
 	}
-	return move(result);
+	return std::move(result);
 }
 
 static void VerifyNullHandling(const BoundFunctionExpression &expr, DataChunk &args, Vector &result) {
@@ -75,6 +75,7 @@ void ExpressionExecutor::Execute(const BoundFunctionExpression &expr, Expression
 	arguments.SetCardinality(count);
 
 	state->profiler.BeginSample();
+	D_ASSERT(expr.function.function);
 	expr.function.function(arguments, *state, result);
 	state->profiler.EndSample(count);
 

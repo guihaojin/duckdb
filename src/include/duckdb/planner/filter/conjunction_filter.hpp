@@ -34,15 +34,23 @@ public:
 
 class ConjunctionOrFilter : public ConjunctionFilter {
 public:
+	static constexpr const TableFilterType TYPE = TableFilterType::CONJUNCTION_OR;
+
+public:
 	ConjunctionOrFilter();
 
 public:
 	FilterPropagateResult CheckStatistics(BaseStatistics &stats) override;
 	string ToString(const string &column_name) override;
 	bool Equals(const TableFilter &other) const override;
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<TableFilter> Deserialize(Deserializer &deserializer);
 };
 
 class ConjunctionAndFilter : public ConjunctionFilter {
+public:
+	static constexpr const TableFilterType TYPE = TableFilterType::CONJUNCTION_AND;
+
 public:
 	ConjunctionAndFilter();
 
@@ -50,6 +58,8 @@ public:
 	FilterPropagateResult CheckStatistics(BaseStatistics &stats) override;
 	string ToString(const string &column_name) override;
 	bool Equals(const TableFilter &other) const override;
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<TableFilter> Deserialize(Deserializer &deserializer);
 };
 
 } // namespace duckdb

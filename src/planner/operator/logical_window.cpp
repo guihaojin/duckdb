@@ -1,5 +1,7 @@
 #include "duckdb/planner/operator/logical_window.hpp"
 
+#include "duckdb/main/config.hpp"
+
 namespace duckdb {
 
 vector<ColumnBinding> LogicalWindow::GetColumnBindings() {
@@ -15,6 +17,19 @@ void LogicalWindow::ResolveTypes() {
 	for (auto &expr : expressions) {
 		types.push_back(expr->return_type);
 	}
+}
+
+vector<idx_t> LogicalWindow::GetTableIndex() const {
+	return vector<idx_t> {window_index};
+}
+
+string LogicalWindow::GetName() const {
+#ifdef DEBUG
+	if (DBConfigOptions::debug_print_bindings) {
+		return LogicalOperator::GetName() + StringUtil::Format(" #%llu", window_index);
+	}
+#endif
+	return LogicalOperator::GetName();
 }
 
 } // namespace duckdb

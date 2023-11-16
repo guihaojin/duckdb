@@ -43,6 +43,14 @@ void Event::Finish() {
 void Event::AddDependency(Event &event) {
 	total_dependencies++;
 	event.parents.push_back(weak_ptr<Event>(shared_from_this()));
+#ifdef DEBUG
+	event.parents_raw.push_back(this);
+#endif
+}
+
+const vector<Event *> &Event::GetParentsVerification() const {
+	D_ASSERT(parents.size() == parents_raw.size());
+	return parents_raw;
 }
 
 void Event::FinishTask() {
@@ -56,18 +64,21 @@ void Event::FinishTask() {
 }
 
 void Event::InsertEvent(shared_ptr<Event> replacement_event) {
-	replacement_event->parents = move(parents);
+	replacement_event->parents = std::move(parents);
+#ifdef DEBUG
+	replacement_event->parents_raw = std::move(parents_raw);
+#endif
 	replacement_event->AddDependency(*this);
-	executor.AddEvent(move(replacement_event));
+	executor.AddEvent(std::move(replacement_event));
 }
 
-void Event::SetTasks(vector<unique_ptr<Task>> tasks) {
+void Event::SetTasks(vector<shared_ptr<Task>> tasks) {
 	auto &ts = TaskScheduler::GetScheduler(executor.context);
 	D_ASSERT(total_tasks == 0);
 	D_ASSERT(!tasks.empty());
 	this->total_tasks = tasks.size();
 	for (auto &task : tasks) {
-		ts.ScheduleTask(executor.GetToken(), move(task));
+		ts.ScheduleTask(executor.GetToken(), std::move(task));
 	}
 }
 

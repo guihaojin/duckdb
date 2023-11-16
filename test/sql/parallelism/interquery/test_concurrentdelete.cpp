@@ -13,10 +13,10 @@ static constexpr int CONCURRENT_DELETE_THREAD_COUNT = 10;
 static constexpr int CONCURRENT_DELETE_INSERT_ELEMENTS = 100;
 
 TEST_CASE("Single thread delete", "[interquery][.]") {
-	unique_ptr<QueryResult> result;
+	duckdb::unique_ptr<QueryResult> result;
 	DuckDB db(nullptr);
 	Connection con(db);
-	vector<unique_ptr<Connection>> connections;
+	duckdb::vector<duckdb::unique_ptr<Connection>> connections;
 
 	// enable detailed profiling
 	con.Query("PRAGMA enable_profiling");
@@ -48,10 +48,10 @@ TEST_CASE("Single thread delete", "[interquery][.]") {
 }
 
 TEST_CASE("Sequential delete", "[interquery][.]") {
-	unique_ptr<MaterializedQueryResult> result;
+	duckdb::unique_ptr<MaterializedQueryResult> result;
 	DuckDB db(nullptr);
 	Connection con(db);
-	vector<unique_ptr<Connection>> connections;
+	duckdb::vector<duckdb::unique_ptr<Connection>> connections;
 	Value count;
 
 	// enable detailed profiling
@@ -72,7 +72,7 @@ TEST_CASE("Sequential delete", "[interquery][.]") {
 	}
 
 	for (size_t i = 0; i < CONCURRENT_DELETE_THREAD_COUNT; i++) {
-		connections.push_back(make_unique<Connection>(db));
+		connections.push_back(make_uniq<Connection>(db));
 		connections[i]->Query("BEGIN TRANSACTION;");
 	}
 
@@ -109,10 +109,10 @@ TEST_CASE("Sequential delete", "[interquery][.]") {
 }
 
 TEST_CASE("Rollback delete", "[interquery][.]") {
-	unique_ptr<MaterializedQueryResult> result;
+	duckdb::unique_ptr<MaterializedQueryResult> result;
 	DuckDB db(nullptr);
 	Connection con(db);
-	vector<unique_ptr<Connection>> connections;
+	duckdb::vector<duckdb::unique_ptr<Connection>> connections;
 
 	// enable detailed profiling
 	con.Query("PRAGMA enable_profiling");
@@ -167,11 +167,11 @@ static void delete_elements(DuckDB *db, bool *correct, size_t threadnr) {
 	for (size_t i = 0; i < CONCURRENT_DELETE_INSERT_ELEMENTS; i++) {
 		// count should decrease by one for every delete we do
 		auto element = CONCURRENT_DELETE_INSERT_ELEMENTS * threadnr + i;
-		if (!con.Query("DELETE FROM integers WHERE i=" + to_string(element))->success) {
+		if (con.Query("DELETE FROM integers WHERE i=" + to_string(element))->HasError()) {
 			correct[threadnr] = false;
 		}
 		result = con.Query("SELECT COUNT(*) FROM integers");
-		if (!result->success) {
+		if (result->HasError()) {
 			correct[threadnr] = false;
 		} else {
 			Value new_count = result->GetValue(0, 0);
@@ -188,7 +188,7 @@ static void delete_elements(DuckDB *db, bool *correct, size_t threadnr) {
 }
 
 TEST_CASE("Concurrent delete", "[interquery][.]") {
-	unique_ptr<MaterializedQueryResult> result;
+	duckdb::unique_ptr<MaterializedQueryResult> result;
 	DuckDB db(nullptr);
 	Connection con(db);
 

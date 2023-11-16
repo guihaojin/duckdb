@@ -1,50 +1,53 @@
 #include "duckdb/execution/operator/helper/physical_result_collector.hpp"
-#include "duckdb/execution/operator/helper/physical_materialized_collector.hpp"
+
 #include "duckdb/execution/operator/helper/physical_batch_collector.hpp"
-#include "duckdb/main/prepared_statement_data.hpp"
+#include "duckdb/execution/operator/helper/physical_materialized_collector.hpp"
+#include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/main/prepared_statement_data.hpp"
+#include "duckdb/parallel/meta_pipeline.hpp"
 #include "duckdb/parallel/pipeline.hpp"
 
 namespace duckdb {
 
 PhysicalResultCollector::PhysicalResultCollector(PreparedStatementData &data)
     : PhysicalOperator(PhysicalOperatorType::RESULT_COLLECTOR, {LogicalType::BOOLEAN}, 0),
-      statement_type(data.statement_type), properties(data.properties), plan(data.plan.get()), names(data.names) {
+      statement_type(data.statement_type), properties(data.properties), plan(*data.plan), names(data.names) {
 	this->types = data.types;
 }
 
 unique_ptr<PhysicalResultCollector> PhysicalResultCollector::GetResultCollector(ClientContext &context,
                                                                                 PreparedStatementData &data) {
-	auto &config = DBConfig::GetConfig(context);
-	bool use_materialized_collector =
-	    !config.options.preserve_insertion_order || !data.plan->AllSourcesSupportBatchIndex();
-	if (use_materialized_collector) {
-		// parallel materialized collector only if we don't care about maintaining insertion order
-		return make_unique_base<PhysicalResultCollector, PhysicalMaterializedCollector>(
-		    data, !config.options.preserve_insertion_order);
+	if (!PhysicalPlanGenerator::PreserveInsertionOrder(context, *data.plan)) {
+		// the plan is not order preserving, so we just use the parallel materialized collector
+		return make_uniq_base<PhysicalResultCollector, PhysicalMaterializedCollector>(data, true);
+	} else if (!PhysicalPlanGenerator::UseBatchIndex(context, *data.plan)) {
+		// the plan is order preserving, but we cannot use the batch index: use a single-threaded result collector
+		return make_uniq_base<PhysicalResultCollector, PhysicalMaterializedCollector>(data, false);
 	} else {
 		// we care about maintaining insertion order and the sources all support batch indexes
 		// use a batch collector
-		return make_unique_base<PhysicalResultCollector, PhysicalBatchCollector>(data);
+		return make_uniq_base<PhysicalResultCollector, PhysicalBatchCollector>(data);
 	}
 }
 
-vector<PhysicalOperator *> PhysicalResultCollector::GetChildren() const {
+vector<const_reference<PhysicalOperator>> PhysicalResultCollector::GetChildren() const {
 	return {plan};
 }
 
-void PhysicalResultCollector::BuildPipelines(Executor &executor, Pipeline &current, PipelineBuildState &state) {
+void PhysicalResultCollector::BuildPipelines(Pipeline &current, MetaPipeline &meta_pipeline) {
 	// operator is a sink, build a pipeline
 	sink_state.reset();
 
-	// single operator:
-	// the operator becomes the data source of the current pipeline
-	state.SetPipelineSource(current, this);
-	// we create a new pipeline starting from the child
-	D_ASSERT(children.size() == 0);
-	D_ASSERT(plan);
+	D_ASSERT(children.empty());
 
-	BuildChildPipeline(executor, current, state, plan);
+	// single operator: the operator becomes the data source of the current pipeline
+	auto &state = meta_pipeline.GetState();
+	state.SetPipelineSource(current, *this);
+
+	// we create a new pipeline starting from the child
+	auto &child_meta_pipeline = meta_pipeline.CreateChildMetaPipeline(current, *this);
+	child_meta_pipeline.Build(plan);
 }
 
 } // namespace duckdb

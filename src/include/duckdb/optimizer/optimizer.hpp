@@ -22,7 +22,10 @@ class Optimizer {
 public:
 	Optimizer(Binder &binder, ClientContext &context);
 
+	//! Optimize a plan by running specialized optimizers
 	unique_ptr<LogicalOperator> Optimize(unique_ptr<LogicalOperator> plan);
+	//! Return a reference to the client context of this optimizer
+	ClientContext &GetContext();
 
 	ClientContext &context;
 	Binder &binder;
@@ -30,6 +33,10 @@ public:
 
 private:
 	void RunOptimizer(OptimizerType type, const std::function<void()> &callback);
+	void Verify(LogicalOperator &op);
+
+private:
+	unique_ptr<LogicalOperator> plan;
 };
 
 } // namespace duckdb

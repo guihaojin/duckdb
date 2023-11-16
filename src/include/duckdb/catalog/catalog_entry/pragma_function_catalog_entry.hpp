@@ -8,8 +8,9 @@
 
 #pragma once
 
-#include "duckdb/catalog/standard_entry.hpp"
+#include "duckdb/catalog/catalog_entry/function_entry.hpp"
 #include "duckdb/function/pragma_function.hpp"
+#include "duckdb/function/function_set.hpp"
 
 namespace duckdb {
 
@@ -17,11 +18,15 @@ class Catalog;
 struct CreatePragmaFunctionInfo;
 
 //! A table function in the catalog
-class PragmaFunctionCatalogEntry : public StandardEntry {
+class PragmaFunctionCatalogEntry : public FunctionEntry {
 public:
-	PragmaFunctionCatalogEntry(Catalog *catalog, SchemaCatalogEntry *schema, CreatePragmaFunctionInfo *info);
+	static constexpr const CatalogType Type = CatalogType::PRAGMA_FUNCTION_ENTRY;
+	static constexpr const char *Name = "pragma function";
+
+public:
+	PragmaFunctionCatalogEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreatePragmaFunctionInfo &info);
 
 	//! The pragma functions
-	vector<PragmaFunction> functions;
+	PragmaFunctionSet functions;
 };
 } // namespace duckdb

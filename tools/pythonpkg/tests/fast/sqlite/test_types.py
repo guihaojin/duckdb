@@ -1,4 +1,4 @@
-#-*- coding: iso-8859-1 -*-
+# -*- coding: iso-8859-1 -*-
 # pysqlite2/test/types.py: tests for type conversion and detection
 #
 # Copyright (C) 2005 Gerhard Häring <gh@ghaering.de>
@@ -29,6 +29,7 @@ import decimal
 import unittest
 import duckdb
 import pytest
+
 
 class DuckDBTypeTests(unittest.TestCase):
     def setUp(self):
@@ -68,8 +69,10 @@ class DuckDBTypeTests(unittest.TestCase):
 
     def test_CheckDecimalTooBig(self):
         val = 17.29
-        with pytest.raises(duckdb.ConversionException):
-            self.cur.execute("insert into test(f) values (?)", (decimal.Decimal(val),))
+        self.cur.execute("insert into test(f) values (?)", (decimal.Decimal(val),))
+        self.cur.execute("select f from test")
+        row = self.cur.fetchone()
+        self.assertEqual(row[0], val)
 
     def test_CheckDecimal(self):
         val = '17.29'
@@ -89,6 +92,7 @@ class DuckDBTypeTests(unittest.TestCase):
 
     def test_CheckNaN(self):
         import math
+
         val = decimal.Decimal('nan')
         self.cur.execute("insert into test(f) values (?)", (val,))
         self.cur.execute("select f from test")
@@ -138,9 +142,7 @@ class DuckDBTypeTests(unittest.TestCase):
         self.assertEqual(row[0], u"Österreich")
 
 
-
 class CommonTableExpressionTests(unittest.TestCase):
-
     def setUp(self):
         self.con = duckdb.connect(":memory:")
         self.cur = self.con.cursor()
@@ -170,6 +172,7 @@ class CommonTableExpressionTests(unittest.TestCase):
         self.cur.execute("with bar as (select * from test) select * from test where x = 2")
         self.assertIsNotNone(self.cur.description)
         self.assertEqual(self.cur.description[0][0], "x")
+
 
 class DateTimeTests(unittest.TestCase):
     def setUp(self):
@@ -237,9 +240,7 @@ class ListTests(unittest.TestCase):
     def setUp(self):
         self.con = duckdb.connect(":memory:")
         self.cur = self.con.cursor()
-        self.cur.execute(
-            "create table test(single INTEGER[], nested INTEGER[][])"
-        )
+        self.cur.execute("create table test(single INTEGER[], nested INTEGER[][])")
 
     def tearDown(self):
         self.cur.close()
@@ -266,7 +267,12 @@ class ListTests(unittest.TestCase):
         self.cur.execute("insert into test(nested) values (?)", (val,))
         self.assertEqual(
             self.cur.execute("select * from test").fetchall(),
-            [(None, val,)],
+            [
+                (
+                    None,
+                    val,
+                )
+            ],
         )
 
     def test_CheckNone(self):

@@ -49,7 +49,7 @@ bool UUID::FromString(string str, hugeint_t &result) {
 		count++;
 	}
 	// Flip the first bit to make `order by uuid` same as `order by uuid::varchar`
-	result.upper ^= (int64_t(1) << 63);
+	result.upper ^= (uint64_t(1) << 63);
 	return count == 32;
 }
 
@@ -61,7 +61,7 @@ void UUID::ToString(hugeint_t input, char *buf) {
 	};
 
 	// Flip back before convert to string
-	int64_t upper = input.upper ^ (int64_t(1) << 63);
+	int64_t upper = input.upper ^ (uint64_t(1) << 63);
 	idx_t pos = 0;
 	byte_to_hex(upper >> 56 & 0xFF, buf, pos);
 	byte_to_hex(upper >> 48 & 0xFF, buf, pos);
@@ -101,12 +101,12 @@ hugeint_t UUID::GenerateRandomUUID(RandomEngine &engine) {
 	result.upper = 0;
 	result.upper |= ((int64_t)bytes[0] << 56);
 	result.upper |= ((int64_t)bytes[1] << 48);
-	result.upper |= ((int64_t)bytes[3] << 40);
-	result.upper |= ((int64_t)bytes[4] << 32);
-	result.upper |= ((int64_t)bytes[5] << 24);
-	result.upper |= ((int64_t)bytes[6] << 16);
-	result.upper |= ((int64_t)bytes[7] << 8);
-	result.upper |= bytes[8];
+	result.upper |= ((int64_t)bytes[2] << 40);
+	result.upper |= ((int64_t)bytes[3] << 32);
+	result.upper |= ((int64_t)bytes[4] << 24);
+	result.upper |= ((int64_t)bytes[5] << 16);
+	result.upper |= ((int64_t)bytes[6] << 8);
+	result.upper |= bytes[7];
 	result.lower = 0;
 	result.lower |= ((uint64_t)bytes[8] << 56);
 	result.lower |= ((uint64_t)bytes[9] << 48);

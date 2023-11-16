@@ -9,35 +9,34 @@
 #pragma once
 
 #include "duckdb/common/types/value.hpp"
-#include "duckdb/common/unordered_map.hpp"
+#include "duckdb/common/case_insensitive_map.hpp"
 
 namespace duckdb {
 
 struct BoundParameterData {
+public:
 	BoundParameterData() {
 	}
-	BoundParameterData(Value val) : value(move(val)), return_type(value.type()) {
+	explicit BoundParameterData(Value val) : value(std::move(val)), return_type(value.type()) {
 	}
 
+private:
 	Value value;
+
+public:
 	LogicalType return_type;
-};
 
-using bound_parameter_map_t = unordered_map<idx_t, shared_ptr<BoundParameterData>>;
-
-struct BoundParameterMap {
-	BoundParameterMap(vector<BoundParameterData> &parameter_data) : parameter_data(parameter_data) {
+public:
+	void SetValue(Value val) {
+		value = std::move(val);
 	}
 
-	bound_parameter_map_t parameters;
-	vector<BoundParameterData> &parameter_data;
-
-	LogicalType GetReturnType(idx_t index) {
-		if (index >= parameter_data.size()) {
-			return LogicalTypeId::UNKNOWN;
-		}
-		return parameter_data[index].return_type;
+	const Value &GetValue() const {
+		return value;
 	}
+
+	void Serialize(Serializer &serializer) const;
+	static shared_ptr<BoundParameterData> Deserialize(Deserializer &deserializer);
 };
 
 } // namespace duckdb

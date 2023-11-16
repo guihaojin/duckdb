@@ -14,10 +14,7 @@
 namespace duckdb {
 
 struct CreateCopyFunctionInfo : public CreateInfo {
-	explicit CreateCopyFunctionInfo(CopyFunction function)
-	    : CreateInfo(CatalogType::COPY_FUNCTION_ENTRY), function(function) {
-		this->name = function.name;
-	}
+	DUCKDB_API explicit CreateCopyFunctionInfo(CopyFunction function);
 
 	//! Function name
 	string name;
@@ -25,11 +22,7 @@ struct CreateCopyFunctionInfo : public CreateInfo {
 	CopyFunction function;
 
 public:
-	unique_ptr<CreateInfo> Copy() const override {
-		auto result = make_unique<CreateCopyFunctionInfo>(function);
-		CopyProperties(*result);
-		return move(result);
-	}
+	unique_ptr<CreateInfo> Copy() const override;
 };
 
 } // namespace duckdb
